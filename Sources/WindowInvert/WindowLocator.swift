@@ -37,9 +37,12 @@ enum WindowLocator {
             Log.write("no frontmost app (or WindowInvert itself is frontmost)")
             return nil
         }
-        let pid = app.processIdentifier
+        guard let pid = resolvePID(of: app) else {
+            Log.write("could not resolve a process for \(app.bundleIdentifier ?? "?") (reported pid \(app.processIdentifier))")
+            return nil
+        }
         let candidates = onScreenWindows(of: pid)
-        Log.write("frontmost app \(app.bundleIdentifier ?? "?") pid=\(pid); on-screen windows: "
+        Log.write("frontmost app \(app.bundleIdentifier ?? "?") pid=\(pid) (reported \(app.processIdentifier)); on-screen windows: "
                   + candidates.map { "\($0.id) layer=\($0.layer) \($0.bounds) '\($0.title)'" }.joined(separator: "; "))
 
         var axWindows: [AXUIElement] = []
@@ -69,6 +72,33 @@ enum WindowLocator {
         let ax = axWindows.first { windowID(of: $0) == pick.id }
         Log.write("using window-list fallback id=\(pick.id) (AX match: \(ax != nil))")
         return TargetWindow(windowID: pick.id, pid: pid, axWindow: ax)
+    }
+
+    /// Some apps (e.g. Preview on macOS 27) are reported by NSWorkspace with pid -1. Fall back to
+    /// another running instance with the same bundle ID, then to the owner of the front-most window.
+    private static func resolvePID(of app: NSRunningApplication) -> pid_t? {
+        if app.processIdentifier > 0 { return app.processIdentifier }
+        if let bundleID = app.bundleIdentifier {
+            let instances = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .filter { $0.processIdentifier > 0 }
+            if let pid = (instances.first { $0.isActive } ?? instances.first)?.processIdentifier {
+                Log.write("resolved \(bundleID) to pid \(pid) via bundle ID")
+                return pid
+            }
+        }
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                    kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let me = getpid()
+        for info in list {
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  let owner = info[kCGWindowOwnerPID as String] as? pid_t, owner > 0, owner != me,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
+                  bounds.width > 40, bounds.height > 40 else { continue }
+            Log.write("resolved front app to pid \(owner) ('\(info[kCGWindowOwnerName as String] as? String ?? "?")') via window list")
+            return owner
+        }
+        return nil
     }
 
     private struct WindowInfo {
