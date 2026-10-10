@@ -1,4 +1,5 @@
 import AppKit
+import ScreenCaptureKit
 import ApplicationServices
 import QuartzCore
 
@@ -42,6 +43,11 @@ final class InversionController {
         hidesInMissionControl = UserDefaults.standard.bool(forKey: "hidesInMissionControl")
         contrast = Contrast(rawValue: UserDefaults.standard.integer(forKey: "contrast")) ?? .high
         colorMode = ColorMode(rawValue: Int32(UserDefaults.standard.integer(forKey: "colorMode"))) ?? .invert
+        // Warm up Metal and the ScreenCaptureKit connection so the first inversion starts quickly.
+        if hasScreenRecordingPermission {
+            _ = InvertRenderer.shared
+            Task { _ = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) }
+        }
     }
 
     var hasScreenRecordingPermission: Bool { CGPreflightScreenCaptureAccess() }

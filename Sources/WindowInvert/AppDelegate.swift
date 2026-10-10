@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func perform(_ action: ShortcutAction) {
+        Log.write("shortcut \(action.rawValue)")
         switch action {
         case .invertWindow: controller.toggle(.window)
         case .invertContent: controller.toggle(.content)

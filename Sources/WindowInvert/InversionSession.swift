@@ -98,6 +98,13 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         bounds = state.bounds
         isTargetVisible = state.isOnScreen
         refreshInsets()
+        // Order the still-empty (transparent) overlay in now, so it is already on screen when the
+        // first frame arrives instead of appearing a few frames later.
+        if isTargetVisible {
+            overlay.setFrame(bounds.flippedToCocoa, display: false)
+            overlay.level = preferredLevel(above: WindowLocator.windowsAbove(target.windowID))
+            overlay.order(.above, relativeTo: Int(target.windowID))
+        }
 
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let scWindow = content.windows.first(where: { $0.windowID == target.windowID }) else {
@@ -207,9 +214,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // While the target is the front-most normal window, float the overlay one level up. Clicking the
         // window's frame raises it above normal-level windows on every frame until mouse-up, and fighting
         // that with restacking makes the inversion flicker.
-        let me = getpid()
-        let targetIsFront = !above.contains { $0.layer == 0 && $0.pid != target.pid && $0.pid != me }
-        let level: NSWindow.Level = targetIsFront ? .floating : .normal
+        let level = preferredLevel(above: above)
+        let targetIsFront = level == .floating
         if overlay.level != level {
             Log.write("window \(target.windowID): \(targetIsFront ? "front-most, floating overlay" : "covered, normal-level overlay")")
             overlay.level = level
@@ -224,6 +230,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         } else {
             overlay.order(.above, relativeTo: Int(target.windowID))
         }
+    }
+
+    private func preferredLevel(above: [WindowLocator.StackedWindow]) -> NSWindow.Level {
+        let me = getpid()
+        return above.contains { $0.layer == 0 && $0.pid != target.pid && $0.pid != me } ? .normal : .floating
     }
 
     /// Re-measured once a second while the window is still. AX calls block until the target app
