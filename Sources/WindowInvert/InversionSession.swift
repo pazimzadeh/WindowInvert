@@ -255,8 +255,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                 if samples.isEmpty != self.backgroundSamples.isEmpty {
                     Log.write("window \(self.target.windowID): background samples \(samples)")
                 }
+                let changed = samples != self.backgroundSamples || area != self.backgroundArea
                 self.backgroundSamples = samples
                 self.backgroundArea = area
+                // A still window delivers no new frames, so redraw the last one with the new samples.
+                if changed { self.render() }
             }
         }
     }
