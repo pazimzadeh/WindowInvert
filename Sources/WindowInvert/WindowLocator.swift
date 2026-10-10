@@ -34,11 +34,17 @@ enum WindowLocator {
             Log.write("no frontmost app (or WindowInvert itself is frontmost)")
             return nil
         }
-        guard let pid = resolvePID(of: app) else {
+        guard var pid = resolvePID(of: app) else {
             Log.write("could not resolve a process for \(app.bundleIdentifier ?? "?") (reported pid \(app.processIdentifier))")
             return nil
         }
-        let candidates = onScreenWindows(of: pid)
+        var candidates = onScreenWindows(of: pid)
+        // The bundle-ID lookup can land on a helper process with no windows; use the window list then.
+        if app.processIdentifier <= 0, !candidates.contains(where: isDocumentWindow), let owner = frontWindowOwner(), owner != pid {
+            Log.write("pid \(pid) has no usable window; using front window owner pid \(owner)")
+            pid = owner
+            candidates = onScreenWindows(of: pid)
+        }
         Log.write("frontmost app \(app.bundleIdentifier ?? "?") pid=\(pid) (reported \(app.processIdentifier)); on-screen windows: "
                   + candidates.map { "\($0.id) layer=\($0.layer) \($0.bounds) '\($0.title)'" }.joined(separator: "; "))
 
@@ -62,7 +68,7 @@ enum WindowLocator {
         }
 
         // Fallback: the front-most normal-layer window owned by the front app (list is front to back).
-        guard let pick = candidates.first(where: { $0.layer == 0 && $0.bounds.width > 40 && $0.bounds.height > 40 }) else {
+        guard let pick = candidates.first(where: isDocumentWindow) else {
             Log.write("no suitable window found for pid \(pid)")
             return nil
         }
@@ -83,6 +89,14 @@ enum WindowLocator {
                 return pid
             }
         }
+        return frontWindowOwner()
+    }
+
+    private static func isDocumentWindow(_ window: WindowInfo) -> Bool {
+        window.layer == 0 && window.bounds.width > 40 && window.bounds.height > 40
+    }
+
+    private static func frontWindowOwner() -> pid_t? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                     kCGNullWindowID) as? [[String: Any]] else { return nil }
         let me = getpid()
