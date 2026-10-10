@@ -12,7 +12,7 @@ All three shortcuts can be changed (or cleared) in **Settings…** from the menu
 
 Press the same shortcut again to turn it off. Pressing the other shortcut switches modes. You can invert several windows at once; **Stop All Inversions** is in the menu.
 
-The menu bar icon also has: Classic vs. Hue-Preserving invert (hue-preserving keeps reds red and blues blue while flipping brightness), permission status, and Launch at Login.
+The menu bar icon also has: Classic vs. Hue-Preserving invert (hue-preserving keeps reds red and blues blue while flipping brightness), a contrast setting (High / Medium / Soft — Soft maps black to dark grey and white to off-white for long reading), permission status, and Launch at Login.
 
 ## How it works
 
@@ -22,7 +22,8 @@ macOS has no public API to recolor another app's window, so WindowInvert:
 2. Inverts each frame on the GPU (**Metal**).
 3. Draws it in a borderless overlay window sitting directly above the target. The overlay **ignores all mouse events**, so clicks, scrolling, text selection and keyboard input go straight to the real app.
 4. Follows the window every display refresh, so moving and resizing track in real time. Other windows that come in front still cover it normally.
-5. Leaves holes in the overlay wherever the app's own sheets and panels sit (Print, Save, Export, …), so those stay visible, live and un-inverted on top of the inverted document.
+5. Turns itself off while the app shows a sheet or popover over the window (Print, Save, Export, …). macOS already dims the window behind a sheet, and inverting that dimming would brighten it. Inversion comes back when the sheet closes.
+6. In Preview, leaves the dark background around the pages dark (only the pages are inverted), so full-screen reading stays dark.
 
 For ⌥9, the content area is found through the Accessibility API (Preview's PDF view, a browser's web area, a text view, etc.). If nothing suitable is found, it falls back to skipping the title bar.
 
@@ -58,7 +59,7 @@ The menu shows whether each permission is granted. If you rebuild with an ad-hoc
 ## Limitations
 
 - While WindowInvert is running, its shortcuts (default ⌥8 / ⌥9 / ⌥0) no longer type `•` / `ª` / `º`. Change or clear them in Settings if you need those characters.
-- Sheets are revealed through rounded-rectangle holes matching macOS 26's sheet shape; if a future macOS changes the corner radius, a sliver may show at the corners.
+- The overlay is hidden during Mission Control, so the window shows un-inverted there.
 - The overlay is a live copy, so it's about one frame behind the real window; during fast resizes or scrolls you may notice a slight lag at the edges.
 - macOS shows the purple screen-recording indicator in the menu bar while a window is inverted.
 - The overlay hides when the target window is minimized or otherwise off screen, and comes back when it returns.

@@ -140,6 +140,7 @@ enum WindowLocator {
         let pid: pid_t
         let layer: Int
         let bounds: CGRect
+        let title: String
     }
 
     /// On-screen windows that are above `windowID`, ordered front to back.
@@ -152,7 +153,8 @@ enum WindowLocator {
                   let pid = info[kCGWindowOwnerPID as String] as? pid_t,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
-            return StackedWindow(id: id, pid: pid, layer: info[kCGWindowLayer as String] as? Int ?? 0, bounds: bounds)
+            return StackedWindow(id: id, pid: pid, layer: info[kCGWindowLayer as String] as? Int ?? 0, bounds: bounds,
+                                 title: info[kCGWindowName as String] as? String ?? "")
         }
     }
 
@@ -204,6 +206,40 @@ enum WindowLocator {
         let defaultTitleBar: CGFloat = 28
         let top = toolbarBottom.map { max($0 - windowBounds.minY, defaultTitleBar) } ?? defaultTitleBar
         return EdgeInsets(top: min(top, windowBounds.height / 2))
+    }
+
+    /// Points (global, top-left origin) in the margin beside a document's pages, e.g. Preview's dark
+    /// background around PDF pages, so that colour can be left un-inverted. Empty if there are no
+    /// AXPage elements or no usable margin.
+    static func backgroundSamplePoints(in window: AXUIElement) -> [CGPoint] {
+        AXUIElementSetMessagingTimeout(window, 0.2)
+        var queue: [(element: AXUIElement, depth: Int, scroll: CGRect?)] = [(window, 0, nil)]
+        var visited = 0
+        var pageScroll: CGRect?
+        var pages: [CGRect] = []
+        while !queue.isEmpty, visited < 300 {
+            let (element, depth, scroll) = queue.removeFirst()
+            visited += 1
+            let role: String? = copyAttribute(element, kAXRoleAttribute)
+            if role == "AXPage" {
+                if let scroll, pageScroll == nil || pageScroll == scroll, let page = frame(of: element) {
+                    pageScroll = scroll
+                    pages.append(page)
+                }
+                continue
+            }
+            let childScroll = role == "AXScrollArea" ? frame(of: element) : scroll
+            guard depth < 6, let children: [AXUIElement] = copyAttribute(element, kAXChildrenAttribute) else { continue }
+            queue.append(contentsOf: children.map { ($0, depth + 1, childScroll) })
+        }
+        guard let scroll = pageScroll else { return [] }
+        let visible = pages.filter { $0.intersects(scroll) }
+        guard let minX = visible.map(\.minX).min(), let maxX = visible.map(\.maxX).max() else { return [] }
+        let left = minX - scroll.minX
+        let right = scroll.maxX - maxX
+        guard max(left, right) >= 6 else { return [] }
+        let x = left >= right ? scroll.minX + left / 2 : scroll.maxX - right / 2
+        return [0.25, 0.5, 0.75].map { CGPoint(x: x, y: scroll.minY + scroll.height * $0) }
     }
 
     static func frame(of element: AXUIElement) -> CGRect? {

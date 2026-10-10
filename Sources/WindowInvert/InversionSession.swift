@@ -22,12 +22,18 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     var colorMode: ColorMode {
         didSet { render() }
     }
+    var contrast: Contrast {
+        didSet { render() }
+    }
     var onEnded: ((InversionSession) -> Void)?
 
     private struct Frame {
         let pixelBuffer: CVPixelBuffer
         /// Region of the pixel buffer holding the window, in buffer pixels.
         let contentRect: CGRect
+        /// Size in points of what `contentRect` shows. Can exceed the window's CG bounds: a full-screen
+        /// window is captured together with its hidden title bar/toolbar strip above the screen.
+        let capturedPoints: CGSize
     }
 
     private let overlay = OverlayWindow()
@@ -37,9 +43,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var bounds: CGRect = .null
     private var isTargetVisible = false
     private var insets = EdgeInsets.zero
-    /// Target-app windows above the target (sheets, popovers), in CG global coordinates.
-    private var holes: [CGRect] = []
-    private static let holeCornerRadius: CGFloat = 19
+    /// True while one of the target app's sheets or popovers covers the target. macOS already dims
+    /// the window behind a sheet, and inverting that dimming would brighten it, so the overlay hides.
+    private var isPausedForSheet = false
+    /// Height of a full-screen window's hidden title bar/toolbar strip, which capture includes.
+    private var captureExtraTop: CGFloat = 0
+    private var captureSize: CGSize { CGSize(width: bounds.width, height: bounds.height + captureExtraTop) }
+    /// Where to sample the document background (see WindowLocator.backgroundSamplePoints).
+    private var backgroundSamples: [CGPoint] = []
+    private var lastSampleTime: CFTimeInterval = 0
+    private var lastSampleBounds: CGRect = .null
     private var configuredPixelSize = CGSize.zero
     private var configuredScale: CGFloat = 0
     private var isUpdatingConfig = false
@@ -47,10 +60,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var insetsWorkItem: DispatchWorkItem?
     private var ended = false
 
-    init(target: TargetWindow, scope: InvertScope, colorMode: ColorMode) {
+    init(target: TargetWindow, scope: InvertScope, colorMode: ColorMode, contrast: Contrast) {
         self.target = target
         self.scope = scope
         self.colorMode = colorMode
+        self.contrast = contrast
         super.init()
     }
 
@@ -77,7 +91,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         Log.write("start: SCWindow \(scWindow.windowID) frame=\(scWindow.frame) layer=\(scWindow.windowLayer) onScreen=\(scWindow.isOnScreen)")
         let filter = SCContentFilter(desktopIndependentWindow: scWindow)
         let scale = max(CGFloat(filter.pointPixelScale), screenScale(for: bounds))
-        let config = makeConfiguration(size: bounds.size, scale: scale)
+        let config = makeConfiguration(size: captureSize, scale: scale)
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
         self.stream = stream
@@ -137,19 +151,34 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             render()
         }
-        if overlay.isVisible {
-            updateStacking()
-        } else if latestFrame != nil {
+        updateStacking()
+        if !overlay.isVisible && latestFrame != nil {
             render()
         }
     }
 
-    /// Keeps the overlay directly above the target and cuts holes where the target app's own sheets,
-    /// popovers and panels are. The window server keeps those grouped with their parent window, so the
-    /// overlay can't be ordered between them; instead they show through the holes, un-inverted.
+    /// Keeps the overlay directly above the target. The window server keeps an app's sheets and
+    /// popovers grouped with their parent, so the overlay always ends up above them; while one is
+    /// open over the target, the overlay is hidden instead.
     private func updateStacking() {
+        refreshBackgroundSamplesIfNeeded()
         let overlayID = CGWindowID(overlay.windowNumber)
         let above = WindowLocator.windowsAbove(target.windowID)
+        let sheetOpen = above.contains { window in
+            window.pid == target.pid && window.layer == 0 && window.id != overlayID && window.title.isEmpty
+                // Skip tiny helper windows such as the title-bar button strip.
+                && window.bounds.width >= 100 && window.bounds.height >= 40 && window.bounds.intersects(bounds)
+        }
+        if sheetOpen != isPausedForSheet {
+            isPausedForSheet = sheetOpen
+            Log.write("window \(target.windowID): \(sheetOpen ? "sheet/popover open, pausing" : "resuming")")
+            if sheetOpen {
+                overlay.orderOut(nil)
+            } else {
+                render()
+            }
+        }
+        guard overlay.isVisible else { return }
         if let index = above.firstIndex(where: { $0.id == overlayID }) {
             if above[(index + 1)...].contains(where: { $0.pid != target.pid }) {
                 overlay.order(.above, relativeTo: Int(target.windowID))
@@ -157,16 +186,46 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         } else {
             overlay.order(.above, relativeTo: Int(target.windowID))
         }
+    }
 
-        let newHoles = above
-            .filter { $0.pid == target.pid && $0.layer == 0 && $0.id != overlayID }
-            // Skip tiny helper windows such as the title-bar button strip.
-            .filter { $0.bounds.width >= 100 && $0.bounds.height >= 40 && $0.bounds.intersects(bounds) }
-            .map(\.bounds)
-        if newHoles != holes {
-            holes = newHoles
-            render()
+    /// Re-measured once a second while the window is still (AX calls block on the target app).
+    private func refreshBackgroundSamplesIfNeeded() {
+        defer { lastSampleBounds = bounds }
+        let now = CACurrentMediaTime()
+        guard let ax = target.axWindow, bounds == lastSampleBounds, now - lastSampleTime > 1 else { return }
+        lastSampleTime = now
+        let samples = WindowLocator.backgroundSamplePoints(in: ax)
+        if samples.isEmpty != backgroundSamples.isEmpty {
+            Log.write("window \(target.windowID): background samples \(samples)")
         }
+        backgroundSamples = samples
+    }
+
+    /// The document background colour if all sample points agree and it's a dark neutral grey
+    /// (inverting it would make the area around the pages light).
+    private func keepColor(for frame: Frame) -> SIMD4<Float> {
+        guard !backgroundSamples.isEmpty, bounds.width > 0, bounds.height > 0 else { return .zero }
+        let buffer = frame.pixelBuffer
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return .zero }
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        let cr = windowPixelRect(of: frame)
+        var colors: [SIMD3<Float>] = []
+        for point in backgroundSamples {
+            let x = Int(cr.minX + (point.x - bounds.minX) / bounds.width * cr.width)
+            let y = Int(cr.minY + (point.y - bounds.minY) / bounds.height * cr.height)
+            guard x >= 0, y >= 0, x < width, y < height else { return .zero }
+            let pixel = base.advanced(by: y * bytesPerRow + x * 4).assumingMemoryBound(to: UInt8.self)
+            colors.append(SIMD3(Float(pixel[2]), Float(pixel[1]), Float(pixel[0])) / 255) // BGRA
+        }
+        let first = colors[0]
+        guard colors.allSatisfy({ (($0 - first) * ($0 - first)).max() < 0.0004 }) else { return .zero }
+        let luma = first.x * 0.299 + first.y * 0.587 + first.z * 0.114
+        guard luma > 0.03, luma < 0.4, first.max() - first.min() < 0.05 else { return .zero }
+        return SIMD4(first, 1)
     }
 
     // MARK: - Content insets
@@ -234,11 +293,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
         let scale = screenScale(for: bounds)
-        let wanted = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
+        let wanted = CGSize(width: (captureSize.width * scale).rounded(), height: (captureSize.height * scale).rounded())
         guard wanted != configuredPixelSize || scale != configuredScale else { return }
         isUpdatingConfig = true
         needsConfigUpdate = false
-        stream.updateConfiguration(makeConfiguration(size: bounds.size, scale: scale)) { [weak self] error in
+        stream.updateConfiguration(makeConfiguration(size: captureSize, scale: scale)) { [weak self] error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let error { Log.write("updateConfiguration failed: \(error)") }
@@ -263,22 +322,24 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let bufferSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
         var contentRect = CGRect(origin: .zero, size: bufferSize)
+        var capturedPoints = CGSize.zero
         if let dict = info[.contentRect] as? NSDictionary, let rect = CGRect(dictionaryRepresentation: dict) {
             // contentRect is in points; scaleFactor converts to buffer pixels.
             let scaleFactor = (info[.scaleFactor] as? CGFloat) ?? 1
             let contentScale = (info[.contentScale] as? CGFloat) ?? 1
             let pixelRect = CGRect(x: rect.minX * scaleFactor, y: rect.minY * scaleFactor,
-                                   width: rect.width * scaleFactor * contentScale,
-                                   height: rect.height * scaleFactor * contentScale)
+                                   width: rect.width * scaleFactor, height: rect.height * scaleFactor)
+            capturedPoints = CGSize(width: rect.width / contentScale, height: rect.height / contentScale)
             if Self.debug {
                 NSLog("WindowInvert frame buf=\(bufferSize) contentRect=\(rect) contentScale=\(contentScale) scaleFactor=\(scaleFactor)")
             }
             contentRect = pixelRect.intersection(CGRect(origin: .zero, size: bufferSize))
             if contentRect.isNull || contentRect.width < 1 || contentRect.height < 1 {
                 contentRect = CGRect(origin: .zero, size: bufferSize)
+                capturedPoints = .zero
             }
         }
-        let frame = Frame(pixelBuffer: pixelBuffer, contentRect: contentRect)
+        let frame = Frame(pixelBuffer: pixelBuffer, contentRect: contentRect, capturedPoints: capturedPoints)
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.ended else { return }
             self.latestFrame = frame
@@ -295,14 +356,38 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - Rendering
 
+    /// The part of the frame showing the window's CG bounds, in buffer pixels.
+    private func windowPixelRect(of frame: Frame) -> CGRect {
+        let cr = frame.contentRect
+        let captured = frame.capturedPoints
+        let extraTop = captured.height - bounds.height
+        guard captured.height > 0, abs(captured.width - bounds.width) < 2, extraTop > 8 else { return cr }
+        let pixelsPerPoint = cr.height / captured.height
+        return CGRect(x: cr.minX, y: cr.minY + extraTop * pixelsPerPoint,
+                      width: cr.width, height: bounds.height * pixelsPerPoint)
+    }
+
+    private func updateCaptureExtraTop(from frame: Frame) {
+        let captured = frame.capturedPoints
+        guard captured.height > 0, abs(captured.width - bounds.width) < 2 else { return }
+        let extra = captured.height - bounds.height
+        let newExtra = extra > 8 ? extra : (abs(extra) < 2 ? 0 : captureExtraTop)
+        if abs(newExtra - captureExtraTop) > 0.5 {
+            Log.write("window \(target.windowID): capture includes \(newExtra) pt above the window")
+            captureExtraTop = newExtra
+            updateStreamSizeIfNeeded()
+        }
+    }
+
     private func render() {
-        guard !ended, isTargetVisible, let frame = latestFrame, !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return }
+        guard !ended, isTargetVisible, !isPausedForSheet, let frame = latestFrame, !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return }
 
         let overlayRect = scope == .content ? bounds.inset(by: insets) : bounds
         let cocoaRect = overlayRect.flippedToCocoa
 
+        updateCaptureExtraTop(from: frame)
         let buffer = CGSize(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer))
-        let cr = frame.contentRect
+        let cr = windowPixelRect(of: frame)
         let fx0 = (overlayRect.minX - bounds.minX) / bounds.width
         let fy0 = (overlayRect.minY - bounds.minY) / bounds.height
         let fw = overlayRect.width / bounds.width
@@ -324,12 +409,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let drawableSize = CGSize(width: max(1, (cocoaRect.width * scale).rounded()),
                                   height: max(1, (cocoaRect.height * scale).rounded()))
         if layer.drawableSize != drawableSize { layer.drawableSize = drawableSize }
-        let pixelHoles = holes.map { hole in
-            CGRect(x: (hole.minX - overlayRect.minX) * scale, y: (hole.minY - overlayRect.minY) * scale,
-                   width: hole.width * scale, height: hole.height * scale)
-        }
         InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode,
-                                   holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
+                                   contrast: contrast, keep: keepColor(for: frame), into: layer)
         CATransaction.commit()
 
         if !overlay.isVisible {

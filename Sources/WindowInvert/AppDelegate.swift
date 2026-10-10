@@ -101,6 +101,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(menuItem("Switch Invert Style", #selector(switchStyleFromMenu), for: .switchStyle))
 
         menu.addItem(.separator())
+        for contrast in Contrast.allCases {
+            let item = NSMenuItem(title: contrast.title, action: #selector(selectContrast(_:)), keyEquivalent: "")
+            item.tag = contrast.rawValue
+            item.state = controller.contrast == contrast ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
         let screen = controller.hasScreenRecordingPermission
         let screenItem = NSMenuItem(title: screen ? "Screen Recording: Allowed" : "Screen Recording: Not Allowed — Open Settings…",
                                     action: screen ? nil : #selector(openScreenRecording), keyEquivalent: "")
@@ -129,6 +137,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func invertContent() { controller.toggle(.content) }
     @objc private func stopAll() { controller.stopAll() }
     @objc private func switchStyleFromMenu() { switchStyle() }
+    @objc private func selectContrast(_ sender: NSMenuItem) {
+        controller.contrast = Contrast(rawValue: sender.tag) ?? .high
+    }
     @objc private func openSettings() {
         if settingsWindow == nil {
             let settings = SettingsWindowController()

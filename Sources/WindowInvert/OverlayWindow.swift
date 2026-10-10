@@ -15,7 +15,8 @@ final class OverlayWindow: NSWindow {
         isReleasedWhenClosed = false
         animationBehavior = .none
         level = .normal
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .stationary]
+        // .transient hides the overlay during Mission Control instead of animating it separately.
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]
         isExcludedFromWindowsMenu = true
 
         InvertRenderer.shared.configure(metalLayer)
@@ -25,6 +26,9 @@ final class OverlayWindow: NSWindow {
         view.layerContentsRedrawPolicy = .never
         contentView = view
     }
+
+    /// Full-screen windows cover the menu bar area; don't let AppKit push the overlay below it.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }

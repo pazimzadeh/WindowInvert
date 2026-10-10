@@ -22,6 +22,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# The layered .icon gives macOS 26+ proper dark/tinted variants (Assets.car); AppIcon.icns is the fallback.
+xcrun actool Resources/AppIcon.icon --compile "$APP/Contents/Resources" --platform macosx \
+    --minimum-deployment-target 14.0 --app-icon AppIcon \
+    --output-partial-info-plist "$BUILD_DIR/assets-info.plist" >/dev/null
 
 if [[ -z "${SIGN_IDENTITY:-}" ]]; then
     if security find-identity -p codesigning 2>/dev/null | grep -q "WindowInvert Local Signing"; then

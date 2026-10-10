@@ -15,7 +15,15 @@ final class InversionController {
         }
     }
 
+    var contrast: Contrast {
+        didSet {
+            UserDefaults.standard.set(contrast.rawValue, forKey: "contrast")
+            sessions.values.forEach { $0.contrast = contrast }
+        }
+    }
+
     init() {
+        contrast = Contrast(rawValue: UserDefaults.standard.integer(forKey: "contrast")) ?? .high
         colorMode = ColorMode(rawValue: Int32(UserDefaults.standard.integer(forKey: "colorMode"))) ?? .invert
     }
 
@@ -52,7 +60,7 @@ final class InversionController {
             return
         }
 
-        let session = InversionSession(target: target, scope: scope, colorMode: colorMode)
+        let session = InversionSession(target: target, scope: scope, colorMode: colorMode, contrast: contrast)
         session.onEnded = { [weak self] ended in
             guard let self, self.sessions[ended.target.windowID] === ended else { return }
             self.sessions[ended.target.windowID] = nil
