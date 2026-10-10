@@ -66,6 +66,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var captureSize: CGSize { CGSize(width: bounds.width, height: bounds.height + captureExtraTop) }
     /// Where to sample the document background (see WindowLocator.backgroundSamplePoints).
     private var backgroundSamples: [CGPoint] = []
+    private var backgroundArea = CGRect.null
     private var lastSampleTime: CFTimeInterval = 0
     private var lastSampleBounds: CGRect = .null
     private var isSampling = false
@@ -203,12 +204,24 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         }
         guard overlay.isVisible else { return }
+        // While the target is the front-most normal window, float the overlay one level up. Clicking the
+        // window's frame raises it above normal-level windows on every frame until mouse-up, and fighting
+        // that with restacking makes the inversion flicker.
+        let me = getpid()
+        let targetIsFront = !above.contains { $0.layer == 0 && $0.pid != target.pid && $0.pid != me }
+        let level: NSWindow.Level = targetIsFront ? .floating : .normal
+        if overlay.level != level {
+            Log.write("window \(target.windowID): \(targetIsFront ? "front-most, floating overlay" : "covered, normal-level overlay")")
+            overlay.level = level
+            overlay.order(.above, relativeTo: Int(target.windowID))
+            return
+        }
+        guard !targetIsFront else { return }
         if let index = above.firstIndex(where: { $0.id == overlayID }) {
             if above[(index + 1)...].contains(where: { $0.pid != target.pid }) {
                 overlay.order(.above, relativeTo: Int(target.windowID))
             }
         } else {
-            Log.write("window \(target.windowID): overlay fell below the window, restacking")
             overlay.order(.above, relativeTo: Int(target.windowID))
         }
     }
@@ -222,7 +235,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         lastSampleTime = now
         isSampling = true
         Self.axQueue.async { [weak self] in
-            let samples = WindowLocator.backgroundSamplePoints(in: ax)
+            let (samples, area) = WindowLocator.backgroundSamplePoints(in: ax)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isSampling = false
@@ -230,6 +243,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                     Log.write("window \(self.target.windowID): background samples \(samples)")
                 }
                 self.backgroundSamples = samples
+                self.backgroundArea = area
             }
         }
     }
@@ -429,6 +443,12 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                           y: (cr.minY + fy0 * cr.height) / buffer.height,
                           width: fw * cr.width / buffer.width,
                           height: fh * cr.height / buffer.height)
+        // Only the PDF view's gutter keeps its colour; elsewhere (sidebars, inspector) the same grey inverts.
+        let keepRect = backgroundArea.isNull ? CGRect.zero : CGRect(
+            x: (cr.minX + (backgroundArea.minX - bounds.minX) / bounds.width * cr.width) / buffer.width,
+            y: (cr.minY + (backgroundArea.minY - bounds.minY) / bounds.height * cr.height) / buffer.height,
+            width: backgroundArea.width / bounds.width * cr.width / buffer.width,
+            height: backgroundArea.height / bounds.height * cr.height / buffer.height)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -448,7 +468,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         let captureScale = cr.height / max(1, bounds.height)
         InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode,
-                                   contrast: contrast, keep: keepColor(for: frame), edge: Float(3 * captureScale),
+                                   contrast: contrast, keep: keepColor(for: frame), keepRect: keepRect, edge: Float(3 * captureScale),
                                    holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
         CATransaction.commit()
 

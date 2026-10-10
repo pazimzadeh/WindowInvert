@@ -29,23 +29,31 @@ struct WindowState {
 
 enum WindowLocator {
     static func frontmostWindow() -> TargetWindow? {
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              app.processIdentifier != getpid() else {
+        // On macOS 27 NSWorkspace sometimes reports no front app (or WindowInvert) while Preview is in front.
+        let reported = NSWorkspace.shared.frontmostApplication.flatMap { $0.processIdentifier == getpid() ? nil : $0 }
+        var pid: pid_t
+        if let reported {
+            guard let resolved = resolvePID(of: reported) else {
+                Log.write("could not resolve a process for \(reported.bundleIdentifier ?? "?") (reported pid \(reported.processIdentifier))")
+                return nil
+            }
+            pid = resolved
+        } else if let owner = frontWindowOwner() {
+            Log.write("no other frontmost app reported; using front window owner pid \(owner)")
+            pid = owner
+        } else {
             Log.write("no frontmost app (or WindowInvert itself is frontmost)")
             return nil
         }
-        guard var pid = resolvePID(of: app) else {
-            Log.write("could not resolve a process for \(app.bundleIdentifier ?? "?") (reported pid \(app.processIdentifier))")
-            return nil
-        }
+        let app = reported ?? NSRunningApplication(processIdentifier: pid)
         var candidates = onScreenWindows(of: pid)
         // The bundle-ID lookup can land on a helper process with no windows; use the window list then.
-        if app.processIdentifier <= 0, !candidates.contains(where: isDocumentWindow), let owner = frontWindowOwner(), owner != pid {
+        if (app?.processIdentifier ?? 0) <= 0, !candidates.contains(where: isDocumentWindow), let owner = frontWindowOwner(), owner != pid {
             Log.write("pid \(pid) has no usable window; using front window owner pid \(owner)")
             pid = owner
             candidates = onScreenWindows(of: pid)
         }
-        Log.write("frontmost app \(app.bundleIdentifier ?? "?") pid=\(pid) (reported \(app.processIdentifier)); on-screen windows: "
+        Log.write("frontmost app \(app?.bundleIdentifier ?? "?") pid=\(pid) (reported \(app?.processIdentifier ?? 0)); on-screen windows: "
                   + candidates.map { "\($0.id) layer=\($0.layer) \($0.bounds) '\($0.title)'" }.joined(separator: "; "))
 
         var axWindows: [AXUIElement] = []
@@ -225,7 +233,8 @@ enum WindowLocator {
     /// Points (global, top-left origin) in the margin beside a document's pages, e.g. Preview's dark
     /// background around PDF pages, so that colour can be left un-inverted. Empty if there are no
     /// AXPage elements or no usable margin.
-    static func backgroundSamplePoints(in window: AXUIElement) -> [CGPoint] {
+    /// Points in the gutter beside the pages of a PDF view, plus the scroll area they belong to.
+    static func backgroundSamplePoints(in window: AXUIElement) -> (points: [CGPoint], area: CGRect) {
         AXUIElementSetMessagingTimeout(window, 0.2)
         var queue: [(element: AXUIElement, depth: Int, scroll: CGRect?)] = [(window, 0, nil)]
         var visited = 0
@@ -246,14 +255,14 @@ enum WindowLocator {
             guard depth < 6, let children: [AXUIElement] = copyAttribute(element, kAXChildrenAttribute) else { continue }
             queue.append(contentsOf: children.map { ($0, depth + 1, childScroll) })
         }
-        guard let scroll = pageScroll else { return [] }
+        guard let scroll = pageScroll else { return ([], .null) }
         let visible = pages.filter { $0.intersects(scroll) }
-        guard let minX = visible.map(\.minX).min(), let maxX = visible.map(\.maxX).max() else { return [] }
+        guard let minX = visible.map(\.minX).min(), let maxX = visible.map(\.maxX).max() else { return ([], .null) }
         let left = minX - scroll.minX
         let right = scroll.maxX - maxX
-        guard max(left, right) >= 6 else { return [] }
+        guard max(left, right) >= 6 else { return ([], .null) }
         let x = left >= right ? scroll.minX + left / 2 : scroll.maxX - right / 2
-        return [0.25, 0.5, 0.75].map { CGPoint(x: x, y: scroll.minY + scroll.height * $0) }
+        return ([0.25, 0.5, 0.75].map { CGPoint(x: x, y: scroll.minY + scroll.height * $0) }, scroll)
     }
 
     static func frame(of element: AXUIElement) -> CGRect? {

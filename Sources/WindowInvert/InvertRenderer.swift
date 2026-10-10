@@ -53,6 +53,7 @@ final class InvertRenderer {
         var pad0: Float = 0
         var pad1: Float = 0
         var keep: SIMD4<Float>  // rgb of a background colour to leave un-inverted; w = 1 when enabled
+        var keepRect: SIMD4<Float> = .zero  // normalized texture rect where `keep` applies
         var holes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
                     SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero,
                                                                                .zero, .zero, .zero, .zero)
@@ -66,7 +67,7 @@ final class InvertRenderer {
 
     struct VOut { float4 position [[position]]; float2 uv; };
     struct Params { float4 crop; int mode; float low; float high; int holeCount; float holeRadius; float edge;
-                    float2 pad; float4 keep; float4 holes[8]; };
+                    float2 pad; float4 keep; float4 keepRect; float4 holes[8]; };
 
     vertex VOut invert_vertex(uint vid [[vertex_id]], constant Params &p [[buffer(0)]]) {
         const float2 pos[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
@@ -97,7 +98,7 @@ final class InvertRenderer {
         float3 rgb = clamp(c.rgb / a, 0.0, 1.0);
         // Leave the document background alone, but only where the whole neighbourhood is that
         // colour, so anti-aliased text that happens to pass through it still inverts.
-        if (p.keep.w > 0.5) {
+        if (p.keep.w > 0.5 && all(in.uv >= p.keepRect.xy) && all(in.uv <= p.keepRect.xy + p.keepRect.zw)) {
             float2 t = 2.0 / float2(tex.get_width(), tex.get_height());
             bool keep = true;
             for (int i = 0; i < 5 && keep; i++) {
@@ -171,7 +172,7 @@ final class InvertRenderer {
     /// Renders `pixelBuffer` cropped to `crop` (normalized, top-left origin). Must be called inside a
     /// CATransaction on the main thread so the new contents appear atomically with any window resize.
     func draw(pixelBuffer: CVPixelBuffer, crop: CGRect, mode: ColorMode, contrast: Contrast,
-              keep: SIMD4<Float> = .zero, edge: Float = 0, holes: [CGRect] = [], holeRadius: CGFloat = 0,
+              keep: SIMD4<Float> = .zero, keepRect: CGRect = .zero, edge: Float = 0, holes: [CGRect] = [], holeRadius: CGFloat = 0,
               into layer: CAMetalLayer) {
         guard let textureCache else { return }
         let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -191,7 +192,8 @@ final class InvertRenderer {
 
         var params = Params(crop: SIMD4(Float(crop.minX), Float(crop.minY), Float(crop.width), Float(crop.height)),
                             mode: mode.rawValue, low: contrast.range.low, high: contrast.range.high,
-                            edge: edge, keep: keep)
+                            edge: edge, keep: keep,
+                            keepRect: SIMD4(Float(keepRect.minX), Float(keepRect.minY), Float(keepRect.width), Float(keepRect.height)))
         params.holeCount = Int32(min(holes.count, Self.maxHoles))
         params.holeRadius = Float(holeRadius)
         withUnsafeMutableBytes(of: &params.holes) { raw in
