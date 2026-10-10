@@ -255,14 +255,26 @@ enum WindowLocator {
             guard depth < 6, let children: [AXUIElement] = copyAttribute(element, kAXChildrenAttribute) else { continue }
             queue.append(contentsOf: children.map { ($0, depth + 1, childScroll) })
         }
-        guard let scroll = pageScroll else { return ([], .null) }
-        let visible = pages.filter { $0.intersects(scroll) }
+        guard let absScroll = pageScroll, let win = frame(of: window) else { return ([], .null) }
+        // Relative to the window's top-left, so the points stay valid while the window moves.
+        let scroll = absScroll.offsetBy(dx: -win.minX, dy: -win.minY)
+        let relPages = pages.map { $0.offsetBy(dx: -win.minX, dy: -win.minY) }
+        let visible = relPages.filter { $0.intersects(scroll) }
         guard let minX = visible.map(\.minX).min(), let maxX = visible.map(\.maxX).max() else { return ([], .null) }
         let left = minX - scroll.minX
         let right = scroll.maxX - maxX
-        guard max(left, right) >= 6 else { return ([], .null) }
-        let x = left >= right ? scroll.minX + left / 2 : scroll.maxX - right / 2
-        return ([0.25, 0.5, 0.75].map { CGPoint(x: x, y: scroll.minY + scroll.height * $0) }, scroll)
+        if max(left, right) >= 6 {
+            let x = left >= right ? scroll.minX + left / 2 : scroll.maxX - right / 2
+            return ([0.25, 0.5, 0.75].map { CGPoint(x: x, y: scroll.minY + scroll.height * $0) }, scroll)
+        }
+        // Pages fill the width: sample the gap between two pages instead.
+        let sorted = visible.sorted { $0.minY < $1.minY }
+        for (upper, lower) in zip(sorted, sorted.dropFirst()) where lower.minY - upper.maxY >= 6 {
+            let y = (upper.maxY + lower.minY) / 2
+            guard y > scroll.minY + 2, y < scroll.maxY - 2 else { continue }
+            return ([0.25, 0.5, 0.75].map { CGPoint(x: scroll.minX + scroll.width * $0, y: y) }, scroll)
+        }
+        return ([], scroll)
     }
 
     static func frame(of element: AXUIElement) -> CGRect? {

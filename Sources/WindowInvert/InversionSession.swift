@@ -64,8 +64,10 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Height of a full-screen window's hidden title bar/toolbar strip, which capture includes.
     private var captureExtraTop: CGFloat = 0
     private var captureSize: CGSize { CGSize(width: bounds.width, height: bounds.height + captureExtraTop) }
-    /// Where to sample the document background (see WindowLocator.backgroundSamplePoints).
+    /// Where to sample the document background, relative to the window's top-left
+    /// (see WindowLocator.backgroundSamplePoints).
     private var backgroundSamples: [CGPoint] = []
+    private var lastKeep = SIMD4<Float>.zero
     private var backgroundArea = CGRect.null
     private var lastSampleTime: CFTimeInterval = 0
     private var lastSampleBounds: CGRect = .null
@@ -237,12 +239,12 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         return above.contains { $0.layer == 0 && $0.pid != target.pid && $0.pid != me } ? .normal : .floating
     }
 
-    /// Re-measured once a second while the window is still. AX calls block until the target app
+    /// Re-measured once a second while the window isn't being resized. AX calls block until the target app
     /// answers, so they run off the main thread; otherwise a busy app would stall overlay restacking.
     private func refreshBackgroundSamplesIfNeeded() {
         defer { lastSampleBounds = bounds }
         let now = CACurrentMediaTime()
-        guard let ax = target.axWindow, bounds == lastSampleBounds, !isSampling, now - lastSampleTime > 1 else { return }
+        guard let ax = target.axWindow, bounds.size == lastSampleBounds.size, !isSampling, now - lastSampleTime > 1 else { return }
         lastSampleTime = now
         isSampling = true
         Self.axQueue.async { [weak self] in
@@ -259,9 +261,23 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    /// The document background colour if all sample points agree and it's a dark neutral grey
-    /// (inverting it would make the area around the pages light).
+    /// The document background colour if most sample points agree and it's a dark neutral grey
+    /// (inverting it would make the area around the pages light). Once found, the colour is kept
+    /// while the PDF view exists, so a miss (window dragged, page scrolled over the sample points)
+    /// doesn't flicker the background.
     private func keepColor(for frame: Frame) -> SIMD4<Float> {
+        guard !backgroundArea.isNull else { return .zero }
+        let measured = measuredKeepColor(for: frame)
+        if measured.w > 0 {
+            if lastKeep.w == 0 {
+                Log.write("window \(target.windowID): keeping background colour \(measured)")
+            }
+            lastKeep = measured
+        }
+        return lastKeep
+    }
+
+    private func measuredKeepColor(for frame: Frame) -> SIMD4<Float> {
         guard !backgroundSamples.isEmpty, bounds.width > 0, bounds.height > 0 else { return .zero }
         let buffer = frame.pixelBuffer
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
@@ -273,14 +289,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let cr = windowPixelRect(of: frame)
         var colors: [SIMD3<Float>] = []
         for point in backgroundSamples {
-            let x = Int(cr.minX + (point.x - bounds.minX) / bounds.width * cr.width)
-            let y = Int(cr.minY + (point.y - bounds.minY) / bounds.height * cr.height)
-            guard x >= 0, y >= 0, x < width, y < height else { return .zero }
+            let x = Int(cr.minX + point.x / bounds.width * cr.width)
+            let y = Int(cr.minY + point.y / bounds.height * cr.height)
+            guard x >= 0, y >= 0, x < width, y < height else { continue }
             let pixel = base.advanced(by: y * bytesPerRow + x * 4).assumingMemoryBound(to: UInt8.self)
             colors.append(SIMD3(Float(pixel[2]), Float(pixel[1]), Float(pixel[0])) / 255) // BGRA
         }
-        let first = colors[0]
-        guard colors.allSatisfy({ (($0 - first) * ($0 - first)).max() < 0.0004 }) else { return .zero }
+        let needed = colors.count / 2 + 1
+        guard let first = colors.first(where: { c in
+            colors.filter { (($0 - c) * ($0 - c)).max() < 0.0004 }.count >= needed
+        }), colors.count >= 2 else { return .zero }
         let luma = first.x * 0.299 + first.y * 0.587 + first.z * 0.114
         guard luma > 0.03, luma < 0.4, first.max() - first.min() < 0.05 else { return .zero }
         return SIMD4(first, 1)
@@ -456,8 +474,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                           height: fh * cr.height / buffer.height)
         // Only the PDF view's gutter keeps its colour; elsewhere (sidebars, inspector) the same grey inverts.
         let keepRect = backgroundArea.isNull ? CGRect.zero : CGRect(
-            x: (cr.minX + (backgroundArea.minX - bounds.minX) / bounds.width * cr.width) / buffer.width,
-            y: (cr.minY + (backgroundArea.minY - bounds.minY) / bounds.height * cr.height) / buffer.height,
+            x: (cr.minX + backgroundArea.minX / bounds.width * cr.width) / buffer.width,
+            y: (cr.minY + backgroundArea.minY / bounds.height * cr.height) / buffer.height,
             width: backgroundArea.width / bounds.width * cr.width / buffer.width,
             height: backgroundArea.height / bounds.height * cr.height / buffer.height)
 

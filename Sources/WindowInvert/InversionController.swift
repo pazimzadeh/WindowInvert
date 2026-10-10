@@ -66,7 +66,7 @@ final class InversionController {
             _ = AXIsProcessTrustedWithOptions(options)
         }
         guard let target = WindowLocator.frontmostWindow() else {
-            FailureAlert.show("WindowInvert couldn't find the front window.")
+            Log.write("toggle ignored: no front window")
             return
         }
         Log.write("toggle \(scope) on window \(target.windowID) (AX element: \(target.axWindow != nil))")

@@ -27,7 +27,7 @@ enum Contrast: Int, CaseIterable {
     var range: (low: Float, high: Float) {
         switch self {
         case .high: return (0, 1)
-        case .medium: return (0.10, 1)
+        case .medium: return (20.0 / 255, 1)
         case .soft: return (0.18, 1)
         }
     }
