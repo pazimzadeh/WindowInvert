@@ -6,6 +6,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let controller = InversionController()
     private let hotKeys = HotKeys()
     private var statusItem: NSStatusItem!
+    private var settingsWindow: SettingsWindowController?
+    private var hotKeyFailures: Set<ShortcutAction> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
@@ -20,13 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         controller.onChange = { [weak self] in self?.updateIcon() }
 
-        let option = Int(optionKey)
-        hotKeys.register(id: 1, keyCode: kVK_ANSI_8, modifiers: option) { [weak self] in
-            self?.controller.toggle(.window)
-        }
-        hotKeys.register(id: 2, keyCode: kVK_ANSI_9, modifiers: option) { [weak self] in
-            self?.controller.toggle(.content)
-        }
+        registerHotKeys()
 
         if !controller.hasScreenRecordingPermission {
             CGRequestScreenCaptureAccess()
@@ -42,12 +38,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateIcon() {
-        let active = !controller.sessions.isEmpty
-        let image = NSImage(systemSymbolName: active ? "circle.lefthalf.filled.inverse" : "circle.lefthalf.filled",
-                            accessibilityDescription: "WindowInvert")
-            ?? NSImage(systemSymbolName: "circle.lefthalf.filled", accessibilityDescription: "WindowInvert")
-        image?.isTemplate = true
-        statusItem.button?.image = image
+        statusItem.button?.image = StatusIcon.image(active: !controller.sessions.isEmpty)
+    }
+
+    // MARK: - Shortcuts
+
+    @discardableResult
+    private func registerHotKeys() -> Set<ShortcutAction> {
+        hotKeys.unregisterAll()
+        var failures: Set<ShortcutAction> = []
+        for action in ShortcutAction.allCases {
+            guard let combo = action.combo else { continue }
+            let ok = hotKeys.register(id: action.hotKeyID, combo: combo) { [weak self] in self?.perform(action) }
+            if !ok { failures.insert(action) }
+        }
+        hotKeyFailures = failures
+        return failures
+    }
+
+    private func perform(_ action: ShortcutAction) {
+        switch action {
+        case .invertWindow: controller.toggle(.window)
+        case .invertContent: controller.toggle(.content)
+        case .switchStyle: switchStyle()
+        }
+    }
+
+    private func switchStyle() {
+        controller.colorMode = controller.colorMode == .invert ? .huePreserving : .invert
+        HUD.show(controller.colorMode == .invert ? "Classic Invert" : "Hue-Preserving Invert")
+    }
+
+    private func menuItem(_ title: String, _ selector: Selector, for action: ShortcutAction) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        if let combo = action.combo, let key = combo.menuKeyEquivalent {
+            item.keyEquivalent = key
+            item.keyEquivalentModifierMask = combo.modifierFlags
+        }
+        return item
     }
 
     // MARK: - Menu
@@ -55,12 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        let invertWindow = NSMenuItem(title: "Invert Front Window", action: #selector(invertWindow), keyEquivalent: "8")
-        invertWindow.keyEquivalentModifierMask = [.option]
-        let invertContent = NSMenuItem(title: "Invert Front Window Content Only", action: #selector(invertContent), keyEquivalent: "9")
-        invertContent.keyEquivalentModifierMask = [.option]
-        menu.addItem(invertWindow)
-        menu.addItem(invertContent)
+        menu.addItem(menuItem("Invert Front Window", #selector(invertWindow), for: .invertWindow))
+        menu.addItem(menuItem("Invert Front Window Content Only", #selector(invertContent), for: .invertContent))
 
         let count = controller.sessions.count
         let stopAll = NSMenuItem(title: count > 0 ? "Stop All Inversions (\(count))" : "Stop All Inversions",
@@ -74,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hue.state = controller.colorMode == .huePreserving ? .on : .off
         menu.addItem(classic)
         menu.addItem(hue)
+        menu.addItem(menuItem("Switch Invert Style", #selector(switchStyleFromMenu), for: .switchStyle))
 
         menu.addItem(.separator())
         let screen = controller.hasScreenRecordingPermission
@@ -90,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(login)
 
         menu.addItem(NSMenuItem(title: "Show Diagnostic Log", action: #selector(showLog), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit WindowInvert", action: #selector(quit), keyEquivalent: "q"))
@@ -102,6 +128,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func invertWindow() { controller.toggle(.window) }
     @objc private func invertContent() { controller.toggle(.content) }
     @objc private func stopAll() { controller.stopAll() }
+    @objc private func switchStyleFromMenu() { switchStyle() }
+    @objc private func openSettings() {
+        if settingsWindow == nil {
+            let settings = SettingsWindowController()
+            settings.onShortcutsChanged = { [weak self] in self?.registerHotKeys() ?? [] }
+            settings.onRecordingChanged = { [weak self] recording in
+                guard let self else { return }
+                if recording { self.hotKeys.unregisterAll() } else { self.registerHotKeys() }
+            }
+            settingsWindow = settings
+        }
+        settingsWindow?.show(failures: hotKeyFailures)
+    }
     @objc private func selectClassic() { controller.colorMode = .invert }
     @objc private func selectHuePreserving() { controller.colorMode = .huePreserving }
     @objc private func openScreenRecording() { Settings.openScreenRecording() }
@@ -124,5 +163,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
         }
+    }
+}
+
+enum StatusIcon {
+    static func image(active: Bool) -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            IconArt.drawGlyph(in: rect.insetBy(dx: 1.5, dy: 1.5), context: ctx, ink: .black,
+                              lineWidth: 1.5, mirrored: active)
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = active ? "WindowInvert (active)" : "WindowInvert"
+        return image
     }
 }

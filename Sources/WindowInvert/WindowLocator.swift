@@ -4,9 +4,6 @@ import ApplicationServices
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
 
-/// Cheaper than CGWindowListCopyWindowInfo (IDs only); marked unavailable in the Swift overlay.
-@_silgen_name("CGWindowListCreate")
-private func _CGWindowListCreate(_ option: UInt32, _ relativeToWindow: CGWindowID) -> Unmanaged<CFArray>?
 
 struct TargetWindow {
     let windowID: CGWindowID
@@ -52,10 +49,10 @@ enum WindowLocator {
             let focused: AXUIElement? = copyAttribute(axApp, kAXFocusedWindowAttribute)
             let main: AXUIElement? = copyAttribute(axApp, kAXMainWindowAttribute)
             let all: [AXUIElement] = copyAttribute(axApp, kAXWindowsAttribute) ?? []
-            axWindows = [focused, main].compactMap { $0 } + all
-            // Prefer the focused/main window, but only if the window server says it's a visible,
-            // normal window; some apps report hidden or helper windows as focused.
-            for window in [focused, main].compactMap({ $0 }) {
+            axWindows = [main, focused].compactMap { $0 } + all
+            // Prefer the main (document) window over the focused one, which may be a sheet or panel,
+            // but only if the window server says it's a visible, normal window.
+            for window in [main, focused].compactMap({ $0 }) {
                 let id = windowID(of: window)
                 Log.write("AX focused/main window id=\(id)")
                 if id != 0, candidates.contains(where: { $0.id == id && $0.layer == 0 }) {
@@ -138,15 +135,24 @@ enum WindowLocator {
         return WindowState(bounds: bounds, isOnScreen: onScreen)
     }
 
-    /// IDs of on-screen windows that are above `windowID`, ordered front to back.
-    static func windowIDsAbove(_ windowID: CGWindowID) -> [CGWindowID] {
-        guard let unmanaged = _CGWindowListCreate(CGWindowListOption.optionOnScreenAboveWindow.rawValue, windowID) else {
+    struct StackedWindow {
+        let id: CGWindowID
+        let pid: pid_t
+        let layer: Int
+        let bounds: CGRect
+    }
+
+    /// On-screen windows that are above `windowID`, ordered front to back.
+    static func windowsAbove(_ windowID: CGWindowID) -> [StackedWindow] {
+        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenAboveWindow, windowID) as? [[String: Any]] else {
             return []
         }
-        let array = unmanaged.takeRetainedValue()
-        // CGWindowListCreate stores the window IDs directly as the array's values.
-        return (0..<CFArrayGetCount(array)).map { index in
-            CGWindowID(truncatingIfNeeded: UInt(bitPattern: CFArrayGetValueAtIndex(array, index)))
+        return list.compactMap { info in
+            guard let id = info[kCGWindowNumber as String] as? CGWindowID,
+                  let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
+            return StackedWindow(id: id, pid: pid, layer: info[kCGWindowLayer as String] as? Int ?? 0, bounds: bounds)
         }
     }
 

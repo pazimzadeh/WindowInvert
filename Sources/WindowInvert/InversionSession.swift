@@ -37,6 +37,9 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var bounds: CGRect = .null
     private var isTargetVisible = false
     private var insets = EdgeInsets.zero
+    /// Target-app windows above the target (sheets, popovers), in CG global coordinates.
+    private var holes: [CGRect] = []
+    private static let holeCornerRadius: CGFloat = 19
     private var configuredPixelSize = CGSize.zero
     private var configuredScale: CGFloat = 0
     private var isUpdatingConfig = false
@@ -135,16 +138,34 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             render()
         }
         if overlay.isVisible {
-            keepOverlayAboveTarget()
+            updateStacking()
         } else if latestFrame != nil {
             render()
         }
     }
 
-    private func keepOverlayAboveTarget() {
-        let above = WindowLocator.windowIDsAbove(target.windowID)
-        if above.last != CGWindowID(overlay.windowNumber) {
+    /// Keeps the overlay directly above the target and cuts holes where the target app's own sheets,
+    /// popovers and panels are. The window server keeps those grouped with their parent window, so the
+    /// overlay can't be ordered between them; instead they show through the holes, un-inverted.
+    private func updateStacking() {
+        let overlayID = CGWindowID(overlay.windowNumber)
+        let above = WindowLocator.windowsAbove(target.windowID)
+        if let index = above.firstIndex(where: { $0.id == overlayID }) {
+            if above[(index + 1)...].contains(where: { $0.pid != target.pid }) {
+                overlay.order(.above, relativeTo: Int(target.windowID))
+            }
+        } else {
             overlay.order(.above, relativeTo: Int(target.windowID))
+        }
+
+        let newHoles = above
+            .filter { $0.pid == target.pid && $0.layer == 0 && $0.id != overlayID }
+            // Skip tiny helper windows such as the title-bar button strip.
+            .filter { $0.bounds.width >= 100 && $0.bounds.height >= 40 && $0.bounds.intersects(bounds) }
+            .map(\.bounds)
+        if newHoles != holes {
+            holes = newHoles
+            render()
         }
     }
 
@@ -303,7 +324,12 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let drawableSize = CGSize(width: max(1, (cocoaRect.width * scale).rounded()),
                                   height: max(1, (cocoaRect.height * scale).rounded()))
         if layer.drawableSize != drawableSize { layer.drawableSize = drawableSize }
-        InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode, into: layer)
+        let pixelHoles = holes.map { hole in
+            CGRect(x: (hole.minX - overlayRect.minX) * scale, y: (hole.minY - overlayRect.minY) * scale,
+                   width: hole.width * scale, height: hole.height * scale)
+        }
+        InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode,
+                                   holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
         CATransaction.commit()
 
         if !overlay.isVisible {

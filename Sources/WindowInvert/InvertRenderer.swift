@@ -18,10 +18,18 @@ final class InvertRenderer {
     private let pipeline: MTLRenderPipelineState
     private var textureCache: CVMetalTextureCache?
 
+    static let maxHoles = 8
+
     private struct Params {
         var crop: SIMD4<Float>  // x, y, width, height in normalized texture coordinates
         var mode: Int32
-        var padding: SIMD3<Int32> = .zero
+        var holeCount: Int32 = 0
+        var holeRadius: Float = 0
+        var padding: Float = 0
+        /// Rects (x, y, width, height in drawable pixels) left transparent so windows below show through.
+        var holes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+                    SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) =
+            (.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero)
     }
 
     private static let shaderSource = """
@@ -29,7 +37,7 @@ final class InvertRenderer {
     using namespace metal;
 
     struct VOut { float4 position [[position]]; float2 uv; };
-    struct Params { float4 crop; int mode; int3 padding; };
+    struct Params { float4 crop; int mode; int holeCount; float holeRadius; float padding; float4 holes[8]; };
 
     vertex VOut invert_vertex(uint vid [[vertex_id]], constant Params &p [[buffer(0)]]) {
         const float2 pos[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
@@ -46,6 +54,14 @@ final class InvertRenderer {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         float4 c = tex.sample(s, in.uv);
         float a = c.a;
+        for (int i = 0; i < p.holeCount; i++) {
+            float4 h = p.holes[i];
+            float r = min(p.holeRadius, 0.5 * min(h.z, h.w));
+            float2 q = abs(in.position.xy - (h.xy + 0.5 * h.zw)) - (0.5 * h.zw - r);
+            float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+            a *= saturate(d + 0.5);
+            c *= saturate(d + 0.5);
+        }
         if (a <= 0.0) { return float4(0.0); }
         float3 rgb = clamp(c.rgb / a, 0.0, 1.0);
         float3 o;
@@ -90,7 +106,8 @@ final class InvertRenderer {
 
     /// Renders `pixelBuffer` cropped to `crop` (normalized, top-left origin). Must be called inside a
     /// CATransaction on the main thread so the new contents appear atomically with any window resize.
-    func draw(pixelBuffer: CVPixelBuffer, crop: CGRect, mode: ColorMode, into layer: CAMetalLayer) {
+    func draw(pixelBuffer: CVPixelBuffer, crop: CGRect, mode: ColorMode,
+              holes: [CGRect] = [], holeRadius: CGFloat = 0, into layer: CAMetalLayer) {
         guard let textureCache else { return }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -109,6 +126,14 @@ final class InvertRenderer {
 
         var params = Params(crop: SIMD4(Float(crop.minX), Float(crop.minY), Float(crop.width), Float(crop.height)),
                             mode: mode.rawValue)
+        params.holeCount = Int32(min(holes.count, Self.maxHoles))
+        params.holeRadius = Float(holeRadius)
+        withUnsafeMutableBytes(of: &params.holes) { raw in
+            let slots = raw.bindMemory(to: SIMD4<Float>.self)
+            for (i, hole) in holes.prefix(Self.maxHoles).enumerated() {
+                slots[i] = SIMD4(Float(hole.minX), Float(hole.minY), Float(hole.width), Float(hole.height))
+            }
+        }
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&params, length: MemoryLayout<Params>.stride, index: 0)
