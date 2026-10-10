@@ -33,34 +33,67 @@ struct WindowState {
 enum WindowLocator {
     static func frontmostWindow() -> TargetWindow? {
         guard let app = NSWorkspace.shared.frontmostApplication,
-              app.processIdentifier != getpid() else { return nil }
+              app.processIdentifier != getpid() else {
+            Log.write("no frontmost app (or WindowInvert itself is frontmost)")
+            return nil
+        }
         let pid = app.processIdentifier
+        let candidates = onScreenWindows(of: pid)
+        Log.write("frontmost app \(app.bundleIdentifier ?? "?") pid=\(pid); on-screen windows: "
+                  + candidates.map { "\($0.id) layer=\($0.layer) \($0.bounds) '\($0.title)'" }.joined(separator: "; "))
 
+        var axWindows: [AXUIElement] = []
         if AXIsProcessTrusted() {
             let axApp = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(axApp, 0.5)
-            if let window: AXUIElement = copyAttribute(axApp, kAXFocusedWindowAttribute)
-                ?? copyAttribute(axApp, kAXMainWindowAttribute) {
-                var windowID: CGWindowID = 0
-                if _AXUIElementGetWindow(window, &windowID) == .success, windowID != 0 {
-                    return TargetWindow(windowID: windowID, pid: pid, axWindow: window)
+            let focused: AXUIElement? = copyAttribute(axApp, kAXFocusedWindowAttribute)
+            let main: AXUIElement? = copyAttribute(axApp, kAXMainWindowAttribute)
+            let all: [AXUIElement] = copyAttribute(axApp, kAXWindowsAttribute) ?? []
+            axWindows = [focused, main].compactMap { $0 } + all
+            // Prefer the focused/main window, but only if the window server says it's a visible,
+            // normal window; some apps report hidden or helper windows as focused.
+            for window in [focused, main].compactMap({ $0 }) {
+                let id = windowID(of: window)
+                Log.write("AX focused/main window id=\(id)")
+                if id != 0, candidates.contains(where: { $0.id == id && $0.layer == 0 }) {
+                    return TargetWindow(windowID: id, pid: pid, axWindow: window)
                 }
             }
         }
 
-        // Fallback without Accessibility: the front-most normal-layer window owned by the front app.
+        // Fallback: the front-most normal-layer window owned by the front app (list is front to back).
+        guard let pick = candidates.first(where: { $0.layer == 0 && $0.bounds.width > 40 && $0.bounds.height > 40 }) else {
+            Log.write("no suitable window found for pid \(pid)")
+            return nil
+        }
+        let ax = axWindows.first { windowID(of: $0) == pick.id }
+        Log.write("using window-list fallback id=\(pick.id) (AX match: \(ax != nil))")
+        return TargetWindow(windowID: pick.id, pid: pid, axWindow: ax)
+    }
+
+    private struct WindowInfo {
+        let id: CGWindowID
+        let layer: Int
+        let bounds: CGRect
+        let title: String
+    }
+
+    private static func onScreenWindows(of pid: pid_t) -> [WindowInfo] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                    kCGNullWindowID) as? [[String: Any]] else { return nil }
-        for info in list {
+                                                    kCGNullWindowID) as? [[String: Any]] else { return [] }
+        return list.compactMap { info in
             guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
-                  (info[kCGWindowLayer as String] as? Int) == 0,
                   let id = info[kCGWindowNumber as String] as? CGWindowID,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
-                  bounds.width > 40, bounds.height > 40 else { continue }
-            return TargetWindow(windowID: id, pid: pid, axWindow: nil)
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
+            return WindowInfo(id: id, layer: info[kCGWindowLayer as String] as? Int ?? 0, bounds: bounds,
+                              title: info[kCGWindowName as String] as? String ?? "")
         }
-        return nil
+    }
+
+    private static func windowID(of window: AXUIElement) -> CGWindowID {
+        var id: CGWindowID = 0
+        return _AXUIElementGetWindow(window, &id) == .success ? id : 0
     }
 
     static func state(of windowID: CGWindowID) -> WindowState? {

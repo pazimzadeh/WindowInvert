@@ -55,15 +55,23 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     @MainActor
     func start() async throws {
-        guard let state = WindowLocator.state(of: target.windowID) else { throw SessionError.windowGone }
+        guard let state = WindowLocator.state(of: target.windowID) else {
+            Log.write("start: window \(target.windowID) not in window list")
+            throw SessionError.windowGone
+        }
+        Log.write("start: window \(target.windowID) bounds=\(state.bounds) onScreen=\(state.isOnScreen) scope=\(scope)")
         bounds = state.bounds
         isTargetVisible = state.isOnScreen
         refreshInsets()
 
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let scWindow = content.windows.first(where: { $0.windowID == target.windowID }) else {
+            Log.write("start: ScreenCaptureKit has no window \(target.windowID); it lists "
+                      + content.windows.filter { $0.owningApplication?.processID == target.pid }
+                          .map { "\($0.windowID) \($0.frame) onScreen=\($0.isOnScreen)" }.joined(separator: ", "))
             throw SessionError.windowGone
         }
+        Log.write("start: SCWindow \(scWindow.windowID) frame=\(scWindow.frame) layer=\(scWindow.windowLayer) onScreen=\(scWindow.isOnScreen)")
         let filter = SCContentFilter(desktopIndependentWindow: scWindow)
         let scale = max(CGFloat(filter.pointPixelScale), screenScale(for: bounds))
         let config = makeConfiguration(size: bounds.size, scale: scale)
@@ -71,7 +79,17 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
         self.stream = stream
         try await stream.startCapture()
+        Log.write("start: capture started (\(config.width)x\(config.height) px, scale \(scale))")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.ended else { return }
+            let counts = self.sampleQueue.sync { self.statusCounts }
+            Log.write("after 2s: frame statuses \(counts), overlay visible=\(self.overlay.isVisible), "
+                      + "target visible=\(self.isTargetVisible), overlay frame=\(self.overlay.frame)")
+        }
     }
+
+    /// Frame status histogram (accessed on sampleQueue), for diagnostics.
+    private var statusCounts: [String: Int] = [:]
 
     func stop() {
         guard !ended else { return }
@@ -202,7 +220,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         stream.updateConfiguration(makeConfiguration(size: bounds.size, scale: scale)) { [weak self] error in
             DispatchQueue.main.async {
                 guard let self else { return }
-                if let error { NSLog("WindowInvert: updateConfiguration failed: \(error)") }
+                if let error { Log.write("updateConfiguration failed: \(error)") }
                 self.isUpdatingConfig = false
                 if self.needsConfigUpdate { self.updateStreamSizeIfNeeded() }
             }
@@ -216,9 +234,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
                 as? [[SCStreamFrameInfo: Any]],
               let info = attachments.first,
-              let statusRaw = info[.status] as? Int,
-              SCFrameStatus(rawValue: statusRaw) == .complete,
-              let pixelBuffer = sampleBuffer.imageBuffer else { return }
+              let statusRaw = info[.status] as? Int else { return }
+        let status = SCFrameStatus(rawValue: statusRaw)
+        let key = status.map { "\($0)" } ?? "raw\(statusRaw)"
+        statusCounts[key, default: 0] += 1
+        guard status == .complete, let pixelBuffer = sampleBuffer.imageBuffer else { return }
 
         let bufferSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
         var contentRect = CGRect(origin: .zero, size: bufferSize)
@@ -246,7 +266,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        NSLog("WindowInvert: stream stopped: \(error)")
+        Log.write("stream stopped: \(error)")
         DispatchQueue.main.async { [weak self] in self?.end() }
     }
 

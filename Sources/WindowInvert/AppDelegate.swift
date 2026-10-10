@@ -8,6 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        Log.write("launched v\(version) on macOS \(ProcessInfo.processInfo.operatingSystemVersionString); "
+                  + "screen recording=\(CGPreflightScreenCaptureAccess()) accessibility=\(AXIsProcessTrusted()); "
+                  + "screens: " + NSScreen.screens.map { "\($0.frame) @\($0.backingScaleFactor)x" }.joined(separator: ", "))
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -85,6 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
 
+        menu.addItem(NSMenuItem(title: "Show Diagnostic Log", action: #selector(showLog), keyEquivalent: ""))
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit WindowInvert", action: #selector(quit), keyEquivalent: "q"))
 
@@ -100,6 +106,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func selectHuePreserving() { controller.colorMode = .huePreserving }
     @objc private func openScreenRecording() { Settings.openScreenRecording() }
     @objc private func openAccessibility() { Settings.openAccessibility() }
+    @objc private func showLog() {
+        if !FileManager.default.fileExists(atPath: Log.url.path) { Log.write("log opened") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { NSWorkspace.shared.open(Log.url) }
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func toggleLaunchAtLogin() {

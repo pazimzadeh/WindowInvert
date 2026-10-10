@@ -35,9 +35,10 @@ final class InversionController {
             _ = AXIsProcessTrustedWithOptions(options)
         }
         guard let target = WindowLocator.frontmostWindow() else {
-            NSSound.beep()
+            FailureAlert.show("WindowInvert couldn't find the front window.")
             return
         }
+        Log.write("toggle \(scope) on window \(target.windowID) (AX element: \(target.axWindow != nil))")
 
         if let existing = sessions[target.windowID] {
             if existing.scope == scope {
@@ -66,14 +67,14 @@ final class InversionController {
             do {
                 try await session.start()
             } catch {
-                NSLog("WindowInvert: failed to start capture: \(error)")
+                Log.write("failed to start capture: \(error)")
                 session.stop()
                 if self.sessions[target.windowID] === session {
                     self.sessions[target.windowID] = nil
                     self.updateDisplayLink()
                     self.onChange?()
                 }
-                NSSound.beep()
+                FailureAlert.show("WindowInvert couldn't capture this window.\n\n\(error.localizedDescription)")
             }
         }
     }
@@ -99,6 +100,21 @@ final class InversionController {
     @objc private func tick() {
         for session in Array(sessions.values) {
             session.tick()
+        }
+    }
+}
+
+enum FailureAlert {
+    static func show(_ message: String) {
+        NSSound.beep()
+        let alert = NSAlert()
+        alert.messageText = "Couldn't invert window"
+        alert.informativeText = message + "\n\nThe diagnostic log has details you can send to the developer."
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Show Log")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(Log.url)
         }
     }
 }
