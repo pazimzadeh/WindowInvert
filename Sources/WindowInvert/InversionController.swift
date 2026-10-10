@@ -22,7 +22,24 @@ final class InversionController {
         }
     }
 
+    var pausesBehindSheets: Bool {
+        didSet {
+            UserDefaults.standard.set(pausesBehindSheets, forKey: "pausesBehindSheets")
+            sessions.values.forEach { $0.pausesBehindSheets = pausesBehindSheets }
+        }
+    }
+
+    var hidesInMissionControl: Bool {
+        didSet {
+            UserDefaults.standard.set(hidesInMissionControl, forKey: "hidesInMissionControl")
+            sessions.values.forEach { $0.hidesInMissionControl = hidesInMissionControl }
+        }
+    }
+
     init() {
+        UserDefaults.standard.register(defaults: ["pausesBehindSheets": true, "hidesInMissionControl": true])
+        pausesBehindSheets = UserDefaults.standard.bool(forKey: "pausesBehindSheets")
+        hidesInMissionControl = UserDefaults.standard.bool(forKey: "hidesInMissionControl")
         contrast = Contrast(rawValue: UserDefaults.standard.integer(forKey: "contrast")) ?? .high
         colorMode = ColorMode(rawValue: Int32(UserDefaults.standard.integer(forKey: "colorMode"))) ?? .invert
     }
@@ -61,6 +78,8 @@ final class InversionController {
         }
 
         let session = InversionSession(target: target, scope: scope, colorMode: colorMode, contrast: contrast)
+        session.pausesBehindSheets = pausesBehindSheets
+        session.hidesInMissionControl = hidesInMissionControl
         session.onEnded = { [weak self] ended in
             guard let self, self.sessions[ended.target.windowID] === ended else { return }
             self.sessions[ended.target.windowID] = nil

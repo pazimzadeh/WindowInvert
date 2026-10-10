@@ -20,6 +20,7 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
+strip -x "$APP/Contents/MacOS/$APP_NAME"  # local symbols only; ~35% smaller
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # The layered .icon gives macOS 26+ proper dark/tinted variants (Assets.car); AppIcon.icns is the fallback.

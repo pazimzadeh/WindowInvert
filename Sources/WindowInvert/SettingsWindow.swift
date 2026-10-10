@@ -11,7 +11,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 200),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 236),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "WindowInvert Settings"
         window.isReleasedWhenClosed = false

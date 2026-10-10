@@ -61,6 +61,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .invertWindow: controller.toggle(.window)
         case .invertContent: controller.toggle(.content)
         case .switchStyle: switchStyle()
+        case .stopAll:
+            guard !controller.sessions.isEmpty else { return }
+            controller.stopAll()
+            HUD.show("All Inversions Stopped")
         }
     }
 
@@ -86,9 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(menuItem("Invert Front Window", #selector(invertWindow), for: .invertWindow))
         menu.addItem(menuItem("Invert Front Window Content Only", #selector(invertContent), for: .invertContent))
 
-        let count = controller.sessions.count
-        let stopAll = NSMenuItem(title: count > 0 ? "Stop All Inversions (\(count))" : "Stop All Inversions",
-                                 action: count > 0 ? #selector(stopAll) : nil, keyEquivalent: "")
+        let stopAll = menuItem("Stop All Inversions", #selector(stopAll), for: .stopAll)
+        if controller.sessions.isEmpty { stopAll.action = nil }
         menu.addItem(stopAll)
 
         menu.addItem(.separator())
@@ -107,6 +110,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.state = controller.contrast == contrast ? .on : .off
             menu.addItem(item)
         }
+
+        menu.addItem(.separator())
+        let sheets = NSMenuItem(title: "Invert Behind Sheets & Popovers", action: #selector(toggleSheets), keyEquivalent: "")
+        sheets.state = controller.pausesBehindSheets ? .off : .on
+        menu.addItem(sheets)
+        let missionControl = NSMenuItem(title: "Invert During Mission Control", action: #selector(toggleMissionControl),
+                                        keyEquivalent: "")
+        missionControl.state = controller.hidesInMissionControl ? .off : .on
+        menu.addItem(missionControl)
 
         menu.addItem(.separator())
         let screen = controller.hasScreenRecordingPermission
@@ -137,6 +149,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func invertContent() { controller.toggle(.content) }
     @objc private func stopAll() { controller.stopAll() }
     @objc private func switchStyleFromMenu() { switchStyle() }
+    @objc private func toggleSheets() { controller.pausesBehindSheets.toggle() }
+    @objc private func toggleMissionControl() { controller.hidesInMissionControl.toggle() }
     @objc private func selectContrast(_ sender: NSMenuItem) {
         controller.contrast = Contrast(rawValue: sender.tag) ?? .high
     }

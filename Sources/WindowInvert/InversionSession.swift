@@ -46,6 +46,21 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// True while one of the target app's sheets or popovers covers the target. macOS already dims
     /// the window behind a sheet, and inverting that dimming would brighten it, so the overlay hides.
     private var isPausedForSheet = false
+    /// When off, inversion stays on behind sheets, which show through rounded holes instead.
+    var pausesBehindSheets = true {
+        didSet {
+            isPausedForSheet = false
+            holes = []
+            render()
+        }
+    }
+    var hidesInMissionControl: Bool {
+        get { overlay.hidesInMissionControl }
+        set { overlay.hidesInMissionControl = newValue }
+    }
+    private var holes: [CGRect] = []
+    /// Matches the corner radius of sheets on macOS 26.
+    private static let holeCornerRadius: CGFloat = 19
     /// Height of a full-screen window's hidden title bar/toolbar strip, which capture includes.
     private var captureExtraTop: CGFloat = 0
     private var captureSize: CGSize { CGSize(width: bounds.width, height: bounds.height + captureExtraTop) }
@@ -53,6 +68,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var backgroundSamples: [CGPoint] = []
     private var lastSampleTime: CFTimeInterval = 0
     private var lastSampleBounds: CGRect = .null
+    private var isSampling = false
+    private static let axQueue = DispatchQueue(label: "WindowInvert.ax", qos: .utility)
     private var configuredPixelSize = CGSize.zero
     private var configuredScale: CGFloat = 0
     private var isUpdatingConfig = false
@@ -138,6 +155,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let visible = state.isOnScreen && state.bounds.width > 1 && state.bounds.height > 1
         if visible != isTargetVisible {
             isTargetVisible = visible
+            Log.write("window \(target.windowID): target \(visible ? "visible again" : "not on screen"), bounds \(state.bounds)")
             if !visible { overlay.orderOut(nil) }
         }
         guard visible else { return }
@@ -164,10 +182,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         refreshBackgroundSamplesIfNeeded()
         let overlayID = CGWindowID(overlay.windowNumber)
         let above = WindowLocator.windowsAbove(target.windowID)
-        let sheetOpen = above.contains { window in
+        let sheets = above.filter { window in
             window.pid == target.pid && window.layer == 0 && window.id != overlayID && window.title.isEmpty
                 // Skip tiny helper windows such as the title-bar button strip.
                 && window.bounds.width >= 100 && window.bounds.height >= 40 && window.bounds.intersects(bounds)
+        }
+        let sheetOpen = pausesBehindSheets && !sheets.isEmpty
+        let newHoles = pausesBehindSheets ? [] : sheets.map(\.bounds)
+        if newHoles != holes {
+            holes = newHoles
+            render()
         }
         if sheetOpen != isPausedForSheet {
             isPausedForSheet = sheetOpen
@@ -184,21 +208,30 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                 overlay.order(.above, relativeTo: Int(target.windowID))
             }
         } else {
+            Log.write("window \(target.windowID): overlay fell below the window, restacking")
             overlay.order(.above, relativeTo: Int(target.windowID))
         }
     }
 
-    /// Re-measured once a second while the window is still (AX calls block on the target app).
+    /// Re-measured once a second while the window is still. AX calls block until the target app
+    /// answers, so they run off the main thread; otherwise a busy app would stall overlay restacking.
     private func refreshBackgroundSamplesIfNeeded() {
         defer { lastSampleBounds = bounds }
         let now = CACurrentMediaTime()
-        guard let ax = target.axWindow, bounds == lastSampleBounds, now - lastSampleTime > 1 else { return }
+        guard let ax = target.axWindow, bounds == lastSampleBounds, !isSampling, now - lastSampleTime > 1 else { return }
         lastSampleTime = now
-        let samples = WindowLocator.backgroundSamplePoints(in: ax)
-        if samples.isEmpty != backgroundSamples.isEmpty {
-            Log.write("window \(target.windowID): background samples \(samples)")
+        isSampling = true
+        Self.axQueue.async { [weak self] in
+            let samples = WindowLocator.backgroundSamplePoints(in: ax)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isSampling = false
+                if samples.isEmpty != self.backgroundSamples.isEmpty {
+                    Log.write("window \(self.target.windowID): background samples \(samples)")
+                }
+                self.backgroundSamples = samples
+            }
         }
-        backgroundSamples = samples
     }
 
     /// The document background colour if all sample points agree and it's a dark neutral grey
@@ -409,11 +442,18 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let drawableSize = CGSize(width: max(1, (cocoaRect.width * scale).rounded()),
                                   height: max(1, (cocoaRect.height * scale).rounded()))
         if layer.drawableSize != drawableSize { layer.drawableSize = drawableSize }
+        let pixelHoles = holes.map { hole in
+            CGRect(x: (hole.minX - overlayRect.minX) * scale, y: (hole.minY - overlayRect.minY) * scale,
+                   width: hole.width * scale, height: hole.height * scale)
+        }
+        let captureScale = cr.height / max(1, bounds.height)
         InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode,
-                                   contrast: contrast, keep: keepColor(for: frame), into: layer)
+                                   contrast: contrast, keep: keepColor(for: frame), edge: Float(3 * captureScale),
+                                   holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
         CATransaction.commit()
 
         if !overlay.isVisible {
+            Log.write("window \(target.windowID): showing overlay")
             overlay.order(.above, relativeTo: Int(target.windowID))
         }
     }

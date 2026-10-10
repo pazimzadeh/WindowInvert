@@ -7,12 +7,13 @@ A small macOS menu bar app that color-inverts **one window** — handy for readi
 | **⌥8** (Option-8) | Invert the whole front window (toggle) |
 | **⌥9** (Option-9) | Invert only the window's content, leaving the title bar / toolbar / sidebar alone (toggle) |
 | **⌥0** (Option-0) | Switch invert style: Classic ↔ Hue-Preserving |
+| **⌥7** (Option-7) | Stop all inversions |
 
 All three shortcuts can be changed (or cleared) in **Settings…** from the menu bar icon.
 
-Press the same shortcut again to turn it off. Pressing the other shortcut switches modes. You can invert several windows at once; **Stop All Inversions** is in the menu.
+Press the same shortcut again to turn it off. Pressing the other shortcut switches modes. You can invert several windows at once; **Stop All Inversions** (⌥7) turns them all off.
 
-The menu bar icon also has: Classic vs. Hue-Preserving invert (hue-preserving keeps reds red and blues blue while flipping brightness), a contrast setting (High / Medium / Soft — Soft maps black to dark grey and white to off-white for long reading), permission status, and Launch at Login.
+The menu bar icon also has: Classic vs. Hue-Preserving invert (hue-preserving keeps reds red and blues blue while flipping brightness), a contrast setting (High / Medium / Soft — Medium and Soft lift the black background to dark grey while text stays white), permission status, and Launch at Login.
 
 ## How it works
 
@@ -22,7 +23,7 @@ macOS has no public API to recolor another app's window, so WindowInvert:
 2. Inverts each frame on the GPU (**Metal**).
 3. Draws it in a borderless overlay window sitting directly above the target. The overlay **ignores all mouse events**, so clicks, scrolling, text selection and keyboard input go straight to the real app.
 4. Follows the window every display refresh, so moving and resizing track in real time. Other windows that come in front still cover it normally.
-5. Turns itself off while the app shows a sheet or popover over the window (Print, Save, Export, …). macOS already dims the window behind a sheet, and inverting that dimming would brighten it. Inversion comes back when the sheet closes.
+5. Turns itself off while the app shows a sheet or popover over the window (Print, Save, Export, …). macOS already dims the window behind a sheet, and inverting that dimming would brighten it. Inversion comes back when the sheet closes. Turn on **Invert Behind Sheets & Popovers** in the menu to keep inverting; sheets then show through un-inverted.
 6. In Preview, leaves the dark background around the pages dark (only the pages are inverted), so full-screen reading stays dark.
 
 For ⌥9, the content area is found through the Accessibility API (Preview's PDF view, a browser's web area, a text view, etc.). If nothing suitable is found, it falls back to skipping the title bar.
@@ -58,8 +59,8 @@ The menu shows whether each permission is granted. If you rebuild with an ad-hoc
 
 ## Limitations
 
-- While WindowInvert is running, its shortcuts (default ⌥8 / ⌥9 / ⌥0) no longer type `•` / `ª` / `º`. Change or clear them in Settings if you need those characters.
-- The overlay is hidden during Mission Control, so the window shows un-inverted there.
+- While WindowInvert is running, its shortcuts (default ⌥8 / ⌥9 / ⌥0 / ⌥7) no longer type `•` / `ª` / `º` / `¶`. Change or clear them in Settings if you need those characters.
+- By default the overlay is hidden during Mission Control, so the window shows un-inverted there. Turn on **Invert During Mission Control** to keep it; the inverted layer then stays where the window was instead of following it into Mission Control, as in versions before 0.3.
 - The overlay is a live copy, so it's about one frame behind the real window; during fast resizes or scrolls you may notice a slight lag at the edges.
 - macOS shows the purple screen-recording indicator in the menu bar while a window is inverted.
 - The overlay hides when the target window is minimized or otherwise off screen, and comes back when it returns.
