@@ -1,0 +1,172 @@
+import AppKit
+import ApplicationServices
+
+@_silgen_name("_AXUIElementGetWindow")
+private func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+
+/// Cheaper than CGWindowListCopyWindowInfo (IDs only); marked unavailable in the Swift overlay.
+@_silgen_name("CGWindowListCreate")
+private func _CGWindowListCreate(_ option: UInt32, _ relativeToWindow: CGWindowID) -> Unmanaged<CFArray>?
+
+struct TargetWindow {
+    let windowID: CGWindowID
+    let pid: pid_t
+    let axWindow: AXUIElement?
+}
+
+/// Distances (in points) from each window edge to the content area.
+struct EdgeInsets: Equatable {
+    var top: CGFloat = 0
+    var left: CGFloat = 0
+    var bottom: CGFloat = 0
+    var right: CGFloat = 0
+    static let zero = EdgeInsets()
+}
+
+/// Current window-server state for a window. `bounds` uses CoreGraphics global coordinates
+/// (origin at the top-left of the primary display, y grows downward).
+struct WindowState {
+    let bounds: CGRect
+    let isOnScreen: Bool
+}
+
+enum WindowLocator {
+    static func frontmostWindow() -> TargetWindow? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != getpid() else { return nil }
+        let pid = app.processIdentifier
+
+        if AXIsProcessTrusted() {
+            let axApp = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(axApp, 0.5)
+            if let window: AXUIElement = copyAttribute(axApp, kAXFocusedWindowAttribute)
+                ?? copyAttribute(axApp, kAXMainWindowAttribute) {
+                var windowID: CGWindowID = 0
+                if _AXUIElementGetWindow(window, &windowID) == .success, windowID != 0 {
+                    return TargetWindow(windowID: windowID, pid: pid, axWindow: window)
+                }
+            }
+        }
+
+        // Fallback without Accessibility: the front-most normal-layer window owned by the front app.
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                    kCGNullWindowID) as? [[String: Any]] else { return nil }
+        for info in list {
+            guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                  (info[kCGWindowLayer as String] as? Int) == 0,
+                  let id = info[kCGWindowNumber as String] as? CGWindowID,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
+                  bounds.width > 40, bounds.height > 40 else { continue }
+            return TargetWindow(windowID: id, pid: pid, axWindow: nil)
+        }
+        return nil
+    }
+
+    static func state(of windowID: CGWindowID) -> WindowState? {
+        // The array must hold raw CGWindowID values, not boxed objects.
+        var value = UnsafeRawPointer(bitPattern: UInt(windowID))
+        guard let ids = CFArrayCreate(nil, &value, 1, nil),
+              let list = CGWindowListCreateDescriptionFromArray(ids) as? [[String: Any]],
+              let info = list.first,
+              let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
+        let onScreen = (info[kCGWindowIsOnscreen as String] as? Bool) ?? false
+        return WindowState(bounds: bounds, isOnScreen: onScreen)
+    }
+
+    /// IDs of on-screen windows that are above `windowID`, ordered front to back.
+    static func windowIDsAbove(_ windowID: CGWindowID) -> [CGWindowID] {
+        guard let unmanaged = _CGWindowListCreate(CGWindowListOption.optionOnScreenAboveWindow.rawValue, windowID) else {
+            return []
+        }
+        let array = unmanaged.takeRetainedValue()
+        // CGWindowListCreate stores the window IDs directly as the array's values.
+        return (0..<CFArrayGetCount(array)).map { index in
+            CGWindowID(truncatingIfNeeded: UInt(bitPattern: CFArrayGetValueAtIndex(array, index)))
+        }
+    }
+
+    // MARK: - Content area detection (Accessibility)
+
+    private static let contentRoles: Set<String> = [
+        "AXScrollArea", "AXWebArea", "AXTextArea", "AXBrowser", "AXTable", "AXOutline", "AXLayoutArea",
+    ]
+
+    /// Finds the main document area of a window (e.g. the PDF view in Preview) and returns its
+    /// insets from the window edges. Falls back to excluding the title bar / toolbar.
+    static func contentInsets(for window: AXUIElement, windowBounds: CGRect) -> EdgeInsets {
+        AXUIElementSetMessagingTimeout(window, 0.3)
+        guard windowBounds.width > 0, windowBounds.height > 0 else { return .zero }
+
+        var best: CGRect?
+        var toolbarBottom: CGFloat?
+        var queue: [(AXUIElement, Int)] = [(window, 0)]
+        var visited = 0
+        let windowArea = windowBounds.width * windowBounds.height
+
+        while !queue.isEmpty, visited < 600 {
+            let (element, depth) = queue.removeFirst()
+            visited += 1
+            let role: String? = copyAttribute(element, kAXRoleAttribute)
+            if element != window, let role, let frame = frame(of: element) {
+                let clipped = frame.intersection(windowBounds)
+                if role == "AXToolbar", !clipped.isNull {
+                    toolbarBottom = max(toolbarBottom ?? 0, clipped.maxY)
+                }
+                if contentRoles.contains(role), !clipped.isNull,
+                   clipped.width * clipped.height >= windowArea * 0.2,
+                   clipped.width * clipped.height > (best.map { $0.width * $0.height } ?? 0) {
+                    best = clipped
+                    // Don't descend into the document itself; its children are content.
+                    continue
+                }
+            }
+            guard depth < 8, let children: [AXUIElement] = copyAttribute(element, kAXChildrenAttribute) else { continue }
+            queue.append(contentsOf: children.map { ($0, depth + 1) })
+        }
+
+        if let best {
+            return EdgeInsets(top: best.minY - windowBounds.minY,
+                              left: best.minX - windowBounds.minX,
+                              bottom: windowBounds.maxY - best.maxY,
+                              right: windowBounds.maxX - best.maxX)
+        }
+        let defaultTitleBar: CGFloat = 28
+        let top = toolbarBottom.map { max($0 - windowBounds.minY, defaultTitleBar) } ?? defaultTitleBar
+        return EdgeInsets(top: min(top, windowBounds.height / 2))
+    }
+
+    static func frame(of element: AXUIElement) -> CGRect? {
+        guard let posValue: AXValue = copyAttribute(element, kAXPositionAttribute),
+              let sizeValue: AXValue = copyAttribute(element, kAXSizeAttribute) else { return nil }
+        var point = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(posValue, .cgPoint, &point), AXValueGetValue(sizeValue, .cgSize, &size) else { return nil }
+        return CGRect(origin: point, size: size)
+    }
+
+    private static func copyAttribute<T>(_ element: AXUIElement, _ attribute: String) -> T? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value else { return nil }
+        if T.self == AXUIElement.self || T.self == AXValue.self {
+            return (value as! T)
+        }
+        return value as? T
+    }
+}
+
+extension CGRect {
+    /// Converts a CoreGraphics global rect (top-left origin) to AppKit screen coordinates (bottom-left origin).
+    var flippedToCocoa: CGRect {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGRect(x: minX, y: primaryHeight - maxY, width: width, height: height)
+    }
+
+    func inset(by insets: EdgeInsets) -> CGRect {
+        CGRect(x: minX + insets.left, y: minY + insets.top,
+               width: max(1, width - insets.left - insets.right),
+               height: max(1, height - insets.top - insets.bottom))
+    }
+}

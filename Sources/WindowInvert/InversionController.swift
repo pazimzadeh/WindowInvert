@@ -1,0 +1,137 @@
+import AppKit
+import ApplicationServices
+import QuartzCore
+
+/// Owns all active inversions and drives window tracking from a display link.
+final class InversionController {
+    private(set) var sessions: [CGWindowID: InversionSession] = [:]
+    private var displayLink: CADisplayLink?
+    var onChange: (() -> Void)?
+
+    var colorMode: ColorMode {
+        didSet {
+            UserDefaults.standard.set(Int(colorMode.rawValue), forKey: "colorMode")
+            sessions.values.forEach { $0.colorMode = colorMode }
+        }
+    }
+
+    init() {
+        colorMode = ColorMode(rawValue: Int32(UserDefaults.standard.integer(forKey: "colorMode"))) ?? .invert
+    }
+
+    var hasScreenRecordingPermission: Bool { CGPreflightScreenCaptureAccess() }
+    var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
+
+    func toggle(_ scope: InvertScope) {
+        guard hasScreenRecordingPermission else {
+            CGRequestScreenCaptureAccess()
+            PermissionAlert.showScreenRecording()
+            return
+        }
+        if !hasAccessibilityPermission {
+            // Content-only mode needs Accessibility to find the document area; whole-window mode
+            // works without it but Accessibility gives more accurate focused-window detection.
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        }
+        guard let target = WindowLocator.frontmostWindow() else {
+            NSSound.beep()
+            return
+        }
+
+        if let existing = sessions[target.windowID] {
+            if existing.scope == scope {
+                existing.stop()
+                sessions[target.windowID] = nil
+                updateDisplayLink()
+                onChange?()
+            } else {
+                existing.scope = scope
+            }
+            return
+        }
+
+        let session = InversionSession(target: target, scope: scope, colorMode: colorMode)
+        session.onEnded = { [weak self] ended in
+            guard let self, self.sessions[ended.target.windowID] === ended else { return }
+            self.sessions[ended.target.windowID] = nil
+            self.updateDisplayLink()
+            self.onChange?()
+        }
+        sessions[target.windowID] = session
+        updateDisplayLink()
+        onChange?()
+
+        Task { @MainActor in
+            do {
+                try await session.start()
+            } catch {
+                NSLog("WindowInvert: failed to start capture: \(error)")
+                session.stop()
+                if self.sessions[target.windowID] === session {
+                    self.sessions[target.windowID] = nil
+                    self.updateDisplayLink()
+                    self.onChange?()
+                }
+                NSSound.beep()
+            }
+        }
+    }
+
+    func stopAll() {
+        sessions.values.forEach { $0.stop() }
+        sessions.removeAll()
+        updateDisplayLink()
+        onChange?()
+    }
+
+    private func updateDisplayLink() {
+        if sessions.isEmpty {
+            displayLink?.invalidate()
+            displayLink = nil
+        } else if displayLink == nil, let screen = NSScreen.main ?? NSScreen.screens.first {
+            let link = screen.displayLink(target: self, selector: #selector(tick))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+    }
+
+    @objc private func tick() {
+        for session in Array(sessions.values) {
+            session.tick()
+        }
+    }
+}
+
+enum PermissionAlert {
+    static func showScreenRecording() {
+        let alert = NSAlert()
+        alert.messageText = "Screen Recording permission needed"
+        alert.informativeText = """
+        WindowInvert draws an inverted copy of the window, so it needs to capture it.
+
+        Enable WindowInvert in System Settings → Privacy & Security → Screen & System Audio Recording, \
+        then quit and reopen WindowInvert.
+        """
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            Settings.openScreenRecording()
+        }
+    }
+}
+
+enum Settings {
+    static func openScreenRecording() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+    }
+
+    static func openAccessibility() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+    }
+
+    private static func open(_ string: String) {
+        if let url = URL(string: string) { NSWorkspace.shared.open(url) }
+    }
+}
