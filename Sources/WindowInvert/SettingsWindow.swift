@@ -11,7 +11,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 236),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 290),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "WindowInvert Settings"
         window.isReleasedWhenClosed = false
@@ -57,7 +57,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let help = NSTextField(wrappingLabelWithString:
             "Click a shortcut and press the new keys. Delete clears it; Esc cancels. "
-            + "\"Switch invert style\" toggles between Classic and Hue-Preserving invert.")
+            + "\"Switch invert style\" toggles between Classic and Hue-Preserving invert. "
+            + "Contrast cycles High → Medium → Soft → High.")
         help.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         help.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)

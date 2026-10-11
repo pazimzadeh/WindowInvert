@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .invertWindow: controller.toggle(.window)
         case .invertContent: controller.toggle(.content)
         case .switchStyle: switchStyle()
+        case .cycleContrast: cycleContrast()
         case .stopAll:
             guard !controller.sessions.isEmpty else { return }
             controller.stopAll()
@@ -111,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.state = controller.contrast == contrast ? .on : .off
             menu.addItem(item)
         }
+        menu.addItem(menuItem("Cycle Contrast Levels", #selector(cycleContrast), for: .cycleContrast))
 
         menu.addItem(.separator())
         let sheets = NSMenuItem(title: "Invert Behind Sheets & Popovers", action: #selector(toggleSheets), keyEquivalent: "")
@@ -155,6 +157,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func invertContent() { controller.toggle(.content) }
     @objc private func stopAll() { controller.stopAll() }
     @objc private func switchStyleFromMenu() { switchStyle() }
+    @objc private func cycleContrast() {
+        controller.contrast = controller.contrast.next
+        HUD.show(controller.contrast.title)
+    }
     @objc private func toggleSheets() { controller.pausesBehindSheets.toggle() }
     @objc private func toggleMissionControl() { controller.hidesInMissionControl.toggle() }
     @objc private func selectContrast(_ sender: NSMenuItem) {

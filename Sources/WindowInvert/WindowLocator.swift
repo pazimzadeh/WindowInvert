@@ -235,6 +235,13 @@ enum WindowLocator {
         let title: String
     }
 
+    static func overlayLevel(above: [StackedWindow], targetPID: pid_t,
+                             overlayWindowIDs: Set<CGWindowID>) -> NSWindow.Level {
+        // Ignore our overlays, not our Settings/alert windows, when deciding what covers the target.
+        above.contains { $0.layer == 0 && $0.pid != targetPID && !overlayWindowIDs.contains($0.id) }
+            ? .normal : .floating
+    }
+
     /// On-screen windows that are above `windowID`, ordered front to back.
     static func windowsAbove(_ windowID: CGWindowID) -> [StackedWindow] {
         guard let list = CGWindowListCopyWindowInfo(.optionOnScreenAboveWindow, windowID) as? [[String: Any]] else {

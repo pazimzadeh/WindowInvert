@@ -274,8 +274,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func preferredLevel(above: [WindowLocator.StackedWindow]) -> NSWindow.Level {
-        let me = getpid()
-        return above.contains { $0.layer == 0 && $0.pid != target.pid && $0.pid != me } ? .normal : .floating
+        let overlayIDs = Set(NSApp.windows.compactMap { window -> CGWindowID? in
+            guard window is OverlayWindow else { return nil }
+            return CGWindowID(window.windowNumber)
+        })
+        return WindowLocator.overlayLevel(above: above, targetPID: target.pid, overlayWindowIDs: overlayIDs)
     }
 
     /// Re-measured once a second while the window isn't being resized. AX calls block until the target app

@@ -4,6 +4,25 @@ import XCTest
 final class WindowStateTests: XCTestCase {
     private let bounds = CGRect(x: 100, y: 100, width: 800, height: 600)
 
+    func testSettingsAndOtherAppsLowerTheOverlay() {
+        let overlay = WindowLocator.StackedWindow(id: 1, pid: 20, layer: 0, bounds: bounds, title: "")
+        for pid in [pid_t(20), pid_t(30)] {
+            let covering = WindowLocator.StackedWindow(id: 2, pid: pid, layer: 0, bounds: bounds, title: "")
+            XCTAssertEqual(WindowLocator.overlayLevel(above: [overlay, covering], targetPID: 10,
+                                                       overlayWindowIDs: [1]), .normal)
+        }
+    }
+
+    func testOtherInversionOverlaysDoNotLowerTheOverlay() {
+        let overlays = [1, 2].map {
+            WindowLocator.StackedWindow(id: CGWindowID($0), pid: 20, layer: 0, bounds: bounds, title: "")
+        }
+        XCTAssertEqual(WindowLocator.overlayLevel(above: overlays, targetPID: 10,
+                                                   overlayWindowIDs: [1, 2]), .floating)
+        XCTAssertEqual(WindowLocator.overlayLevel(above: [], targetPID: 10,
+                                                   overlayWindowIDs: [1, 2]), .floating)
+    }
+
     func testLeavingTheScreenForAnotherSpaceDoesNotHideTheOverlay() {
         for onScreen in [true, false] {
             let state = WindowState(bounds: bounds, isOnScreen: onScreen, isOrderedIn: true)

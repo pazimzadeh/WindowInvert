@@ -16,6 +16,11 @@ enum Contrast: Int, CaseIterable {
     case medium = 1
     case soft = 2
 
+    var next: Contrast {
+        let levels = Self.allCases
+        return levels[(levels.firstIndex(of: self)! + 1) % levels.count]
+    }
+
     var title: String {
         switch self {
         case .high: return "High Contrast"
