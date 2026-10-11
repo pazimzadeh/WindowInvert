@@ -55,16 +55,38 @@ final class WindowStateTests: XCTestCase {
         XCTAssertEqual(bounds.applying(transform), CGRect(origin: .zero, size: bounds.size))
     }
 
-    func testMissionControlDetectionRequiresDocksUnnamedOverviewSurface() {
-        let surface: [String: Any] = [kCGWindowOwnerName as String: "Dock", kCGWindowLayer as String: 18]
-        XCTAssertTrue(WindowLocator.isMissionControlActive(in: [surface]))
-        XCTAssertFalse(WindowLocator.isMissionControlActive(in: []))
-        for (key, value) in [(kCGWindowOwnerName as String, "Preview" as Any),
-                             (kCGWindowLayer as String, 20 as Any),
-                             (kCGWindowName as String, "Dock" as Any)] {
-            var other = surface
-            other[key] = value
-            XCTAssertFalse(WindowLocator.isMissionControlActive(in: [other]))
+    func testMissionControlRecognizesBothCompositorsWithoutEnglishNames() {
+        for (pid, layer) in [(101, 18), (202, 19)] {
+            let surface: [String: Any] = [kCGWindowOwnerPID as String: NSNumber(value: pid),
+                                          kCGWindowLayer as String: layer,
+                                          kCGWindowOwnerName as String: "Localized name",
+                                          kCGWindowName as String: "Overview"]
+            XCTAssertTrue(WindowLocator.isMissionControlActive(in: [surface], bundleIdentifierForPID: bundleID))
         }
+        XCTAssertFalse(WindowLocator.isMissionControlActive(in: [], bundleIdentifierForPID: bundleID))
+    }
+
+    func testMissionControlIgnoresDockBarSpaceStripsAndOtherOwners() {
+        for (pid, layer) in [(101, 20), (101, 19), (202, 14), (202, 0), (202, 18),
+                             (303, 18), (303, 19), (404, 19), (0, 18), (-1, 19)] {
+            let window: [String: Any] = [kCGWindowOwnerPID as String: NSNumber(value: pid),
+                                         kCGWindowLayer as String: layer,
+                                         kCGWindowOwnerName as String: "Dock"]
+            XCTAssertFalse(WindowLocator.isMissionControlActive(in: [window], bundleIdentifierForPID: bundleID))
+        }
+        XCTAssertFalse(WindowLocator.isMissionControlActive(in: [[:]], bundleIdentifierForPID: bundleID))
+    }
+
+    func testMissionControlResolvesTheCurrentProcessInsteadOfCachingItsPID() {
+        let window: [String: Any] = [kCGWindowOwnerPID as String: NSNumber(value: 505), kCGWindowLayer as String: 19]
+        XCTAssertTrue(WindowLocator.isMissionControlActive(in: [window]) { pid in
+            XCTAssertEqual(pid, 505)
+            return "com.apple.WindowManager"
+        })
+        XCTAssertFalse(WindowLocator.isMissionControlActive(in: [window]) { _ in nil })
+    }
+
+    private func bundleID(for pid: pid_t) -> String? {
+        [101: "com.apple.dock", 202: "com.apple.WindowManager", 303: "com.apple.Preview"][pid]
     }
 }

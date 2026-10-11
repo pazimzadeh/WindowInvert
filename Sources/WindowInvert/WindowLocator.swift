@@ -179,15 +179,21 @@ enum WindowLocator {
         guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
-        return isMissionControlActive(in: windows)
+        return isMissionControlActive(in: windows) { pid in
+            NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        }
     }
 
-    static func isMissionControlActive(in windows: [[String: Any]]) -> Bool {
-        // Dock's overview surface exists throughout entry/exit, before its AX notifications arrive.
+    static func isMissionControlActive(in windows: [[String: Any]],
+                                       bundleIdentifierForPID: (pid_t) -> String?) -> Bool {
+        // macOS 27 moved the overview from Dock (18) to WindowManager (19).
+        // Resolve the actual owner: display names are localized and processes can restart.
         return windows.contains {
-            $0[kCGWindowOwnerName as String] as? String == "Dock"
-                && $0[kCGWindowLayer as String] as? Int == 18
-                && ($0[kCGWindowName as String] as? String ?? "").isEmpty
+            guard let layer = $0[kCGWindowLayer as String] as? Int, layer == 18 || layer == 19,
+                  let pid = $0[kCGWindowOwnerPID as String] as? pid_t, pid > 0,
+                  let bundleID = bundleIdentifierForPID(pid) else { return false }
+            return (layer == 18 && bundleID == "com.apple.dock")
+                || (layer == 19 && bundleID == "com.apple.WindowManager")
         }
     }
 
