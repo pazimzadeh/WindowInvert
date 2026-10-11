@@ -48,6 +48,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var isInMissionControl = false
     private var hasPresentationTransform = false
     private var presentationTransformFailed = false
+    private var activation = OverlayActivation()
 
     private var suppressesMissionControl: Bool {
         hidesInMissionControl || !WindowServer.canTransformWindows || presentationTransformFailed
@@ -194,7 +195,10 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         if visible != isTargetVisible {
             isTargetVisible = visible
             Log.write("window \(target.windowID): target \(visible ? "ordered in" : "hidden/minimized"), bounds \(state.bounds)")
-            if !visible { overlay.orderOut(nil) }
+            if !visible {
+                activation.cancel()
+                overlay.orderOut(nil)
+            }
         }
         guard visible else { return }
         matchOverlaySpace()
@@ -222,6 +226,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func matchOverlaySpace() {
         WindowServer.matchSpaces(of: CGWindowID(overlay.windowNumber), to: target.windowID)
+    }
+
+    func cancelActivation() { activation.cancel() }
+
+    func prepareForActivation() {
+        guard !ended, isTargetOnScreen, overlay.isVisible, !isPausedForSheet else { return }
+        activation.begin(at: CACurrentMediaTime())
+        overlay.level = .floating
+        overlay.order(.above, relativeTo: Int(target.windowID))
+        Log.write("window \(target.windowID): activation, preparing overlay order")
     }
 
     /// Keeps the overlay directly above the target. The window server keeps an app's sheets and
@@ -255,7 +269,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // While the target is the front-most normal window, float the overlay one level up. Clicking the
         // window's frame raises it above normal-level windows on every frame until mouse-up, and fighting
         // that with restacking makes the inversion flicker.
-        let level = preferredLevel(above: above)
+        let level = activation.level(aboveWindowsLevel: preferredLevel(above: above), at: CACurrentMediaTime())
         let targetIsFront = level == .floating
         if overlay.level != level {
             Log.write("window \(target.windowID): \(targetIsFront ? "front-most, floating overlay" : "covered, normal-level overlay")")

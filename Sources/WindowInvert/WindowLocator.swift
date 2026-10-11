@@ -166,6 +166,22 @@ enum WindowLocator {
         let title: String
     }
 
+    static func frontDocumentWindow(of app: NSRunningApplication) -> CGWindowID? {
+        // Don't use the global front window here: its order may still describe the outgoing app.
+        let pids = app.processIdentifier > 0 ? [app.processIdentifier] :
+            app.bundleIdentifier.map { NSRunningApplication.runningApplications(withBundleIdentifier: $0)
+                .map(\.processIdentifier).filter { $0 > 0 } } ?? []
+        return pids.lazy.compactMap { onScreenWindows(of: $0).first(where: isDocumentWindow)?.id }.first
+    }
+
+    static func focusedWindowID(of pid: pid_t) -> CGWindowID? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.05)
+        guard let window: AXUIElement = copyAttribute(app, kAXFocusedWindowAttribute) else { return nil }
+        let id = windowID(of: window)
+        return id == 0 ? nil : id
+    }
+
     private static func onScreenWindows(of pid: pid_t) -> [WindowInfo] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                     kCGNullWindowID) as? [[String: Any]] else { return [] }

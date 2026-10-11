@@ -7,6 +7,7 @@ import QuartzCore
 final class InversionController {
     private(set) var sessions: [CGWindowID: InversionSession] = [:]
     private var displayLink: CADisplayLink?
+    private var focusObservers: [pid_t: AXObserver] = [:]
     private var missionControlTrace: MissionControlTrace?
     var isTracingMissionControl: Bool { missionControlTrace != nil }
     var onChange: (() -> Void)?
@@ -49,6 +50,8 @@ final class InversionController {
         hidesInMissionControl = UserDefaults.standard.bool(forKey: "hidesInMissionControl")
         contrast = Contrast(rawValue: UserDefaults.standard.integer(forKey: "contrast")) ?? .high
         colorMode = ColorMode(rawValue: Int32(UserDefaults.standard.integer(forKey: "colorMode"))) ?? .invert
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(applicationActivated(_:)),
+            name: NSWorkspace.didActivateApplicationNotification, object: nil)
         // Warm up Metal and the ScreenCaptureKit connection so the first inversion starts quickly.
         if hasScreenRecordingPermission {
             _ = InvertRenderer.shared
@@ -57,6 +60,54 @@ final class InversionController {
     }
 
     var hasScreenRecordingPermission: Bool { CGPreflightScreenCaptureAccess() }
+
+    @objc private func applicationActivated(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+        sessions.values.forEach { $0.cancelActivation() }
+        if let id = WindowLocator.frontDocumentWindow(of: app) {
+            sessions[id]?.prepareForActivation()
+        }
+    }
+
+    private func focusedWindowChanged(_ element: AXUIElement) {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success,
+              NSRunningApplication(processIdentifier: pid)?.isActive == true else { return }
+        sessions.values.forEach { $0.cancelActivation() }
+        if let id = WindowLocator.focusedWindowID(of: pid) {
+            sessions[id]?.prepareForActivation()
+        }
+    }
+
+    private func updateFocusObservers() {
+        let pids = Set(sessions.values.map(\.target.pid))
+        for pid in Array(focusObservers.keys) where !pids.contains(pid) {
+            if let observer = focusObservers.removeValue(forKey: pid) {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+            }
+        }
+        guard AXIsProcessTrusted() else { return }
+        for pid in pids where focusObservers[pid] == nil {
+            var observer: AXObserver?
+            let callback: AXObserverCallback = { _, element, _, context in
+                guard let context else { return }
+                Unmanaged<InversionController>.fromOpaque(context).takeUnretainedValue().focusedWindowChanged(element)
+            }
+            guard AXObserverCreate(pid, callback, &observer) == .success, let observer,
+                  AXObserverAddNotification(observer, AXUIElementCreateApplication(pid),
+                    kAXFocusedWindowChangedNotification as CFString,
+                    Unmanaged.passUnretained(self).toOpaque()) == .success else { continue }
+            focusObservers[pid] = observer
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        for observer in focusObservers.values {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+    }
     var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
 
     func toggle(_ scope: InvertScope) {
@@ -126,6 +177,7 @@ final class InversionController {
     }
 
     private func updateDisplayLink() {
+        updateFocusObservers()
         if sessions.isEmpty {
             displayLink?.invalidate()
             displayLink = nil
