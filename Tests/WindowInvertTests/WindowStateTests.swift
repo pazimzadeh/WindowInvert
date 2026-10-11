@@ -4,6 +4,22 @@ import XCTest
 final class WindowStateTests: XCTestCase {
     private let bounds = CGRect(x: 100, y: 100, width: 800, height: 600)
 
+    func testShowDesktopReusesTheImageThroughEntryMotionAndReturn() {
+        for (wasShowing, isShowing) in [(false, true), (true, true), (true, false)] {
+            XCTAssertTrue(InversionSession.reusesImageForPresentation(isInMissionControl: false,
+                isShowingDesktop: isShowing, wasShowingDesktop: wasShowing))
+        }
+    }
+
+    func testShowDesktopImageReuseDoesNotChangeMissionControlOrNormalDrawing() {
+        XCTAssertFalse(InversionSession.reusesImageForPresentation(isInMissionControl: false,
+            isShowingDesktop: false, wasShowingDesktop: false))
+        for wasShowing in [false, true] {
+            XCTAssertFalse(InversionSession.reusesImageForPresentation(isInMissionControl: true,
+                isShowingDesktop: false, wasShowingDesktop: wasShowing))
+        }
+    }
+
     func testSettingsAndOtherAppsLowerTheOverlay() {
         let overlay = WindowLocator.StackedWindow(id: 1, pid: 20, layer: 0, bounds: bounds, title: "")
         for pid in [pid_t(20), pid_t(30)] {
@@ -58,6 +74,99 @@ final class WindowStateTests: XCTestCase {
         XCTAssertEqual(state.displayBounds(for: content, inMissionControl: true),
                        CGRect(x: 70, y: 225, width: 350, height: 275))
         XCTAssertEqual(state.displayBounds(for: content, inMissionControl: false), content)
+    }
+
+    func testSpaceSwipeInsideOverviewDoesNotApplyDesktopTranslationTwice() {
+        let native = CGRect(x: 862, y: 33, width: 864, height: 1084)
+        let thumbnail = CGRect(x: 1264, y: 110, width: 446, height: 560)
+        let desktop = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        let content = native.insetBy(dx: 40, dy: 80)
+        let resting = WindowState(bounds: native, isOnScreen: true, isOrderedIn: true, presentedBounds: thumbnail)
+        // macOS 27 trace: partial swipe/cancel, completed swipe, off-Space, then return.
+        for (targetX, desktopX, onScreen) in [(1146.0, -118.0, true), (1677, 413, true),
+                                             (3055, 1791, true), (1264, 0, false),
+                                             (3030, 1766, true), (2907, 1643, true), (1264, 0, true)] {
+            let translation = WindowLocator.spaceTranslation(native: desktop, presented: desktop.offsetBy(dx: desktopX, dy: 0))
+            let state = WindowState(bounds: native, isOnScreen: onScreen, isOrderedIn: true,
+                                    presentedBounds: CGRect(x: targetX, y: 110, width: 446, height: 560),
+                                    spaceTranslation: translation)
+            XCTAssertEqual(state.displayBounds(for: native, inMissionControl: true), thumbnail)
+            XCTAssertEqual(state.displayBounds(for: content, inMissionControl: true),
+                           resting.displayBounds(for: content, inMissionControl: true))
+            XCTAssertEqual(state.displayBounds(for: native, inMissionControl: false), native)
+            XCTAssertEqual(state.displayBounds(for: content, inMissionControl: false), content)
+        }
+    }
+
+    func testSpaceTranslationRejectsScaledOrMissingReferenceGeometry() {
+        let desktop = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        for presented in [CGRect.null, .zero, CGRect(x: 100, y: 20, width: 864, height: 558)] {
+            XCTAssertNil(WindowLocator.spaceTranslation(native: desktop, presented: presented))
+        }
+        XCTAssertNil(WindowLocator.spaceTranslation(native: .null, presented: desktop))
+    }
+
+    func testShowDesktopTracksWindowAndContentWithoutAnOverviewSignal() {
+        let content = bounds.insetBy(dx: 30, dy: 50)
+        for offset in [CGPoint(x: -300, y: -80), CGPoint(x: -900, y: -200),
+                       CGPoint(x: -300, y: -80), .zero] {
+            let state = WindowState(bounds: bounds, isOnScreen: offset.x > -800, isOrderedIn: true,
+                                    presentedBounds: bounds.offsetBy(dx: offset.x, dy: offset.y),
+                                    spaceTranslation: .zero)
+            XCTAssertEqual(state.hasDesktopDisplacement, offset != .zero)
+            XCTAssertEqual(state.displayBounds(for: bounds, inMissionControl: false),
+                           bounds.offsetBy(dx: offset.x, dy: offset.y))
+            XCTAssertEqual(state.displayBounds(for: content, inMissionControl: false),
+                           content.offsetBy(dx: offset.x, dy: offset.y))
+        }
+    }
+
+    func testShowDesktopSeparatesWindowMotionFromSpaceMotion() {
+        for slide in [-1700.0, -200, 0, 200, 1700] {
+            var state = WindowState(bounds: bounds, isOnScreen: true, isOrderedIn: true,
+                                    presentedBounds: bounds.offsetBy(dx: slide, dy: 0),
+                                    spaceTranslation: CGPoint(x: slide, y: 0))
+            XCTAssertFalse(state.hasDesktopDisplacement)
+            XCTAssertEqual(state.displayBounds(for: bounds, inMissionControl: false), bounds)
+            state.presentedBounds = bounds.offsetBy(dx: slide - 500, dy: -100)
+            XCTAssertTrue(state.hasDesktopDisplacement)
+            XCTAssertEqual(state.displayBounds(for: bounds, inMissionControl: false),
+                           bounds.offsetBy(dx: -500, dy: -100))
+        }
+    }
+
+    func testDesktopDisplacementRequiresAReferenceAndIgnoresThumbnailScaleAndRounding() {
+        var state = WindowState(bounds: bounds, isOnScreen: true, isOrderedIn: true,
+                                presentedBounds: bounds.offsetBy(dx: -500, dy: -100))
+        XCTAssertFalse(state.hasDesktopDisplacement)
+        XCTAssertEqual(state.displayBounds(for: bounds, inMissionControl: false), bounds)
+        state.spaceTranslation = .zero
+        state.presentedBounds = CGRect(x: 20, y: 200, width: 400, height: 300)
+        XCTAssertFalse(state.hasDesktopDisplacement)
+        state.presentedBounds = bounds.offsetBy(dx: 1, dy: -1)
+        XCTAssertFalse(state.hasDesktopDisplacement)
+    }
+
+    func testWindowManagerSpaceReferenceMatchesSpaceAndScreenAndIgnoresDock() {
+        let desktop = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        let wallpaperLevel = Int(CGWindowLevelForKey(.desktopWindow)) - 1
+        let candidates: [[String: Any]] = [(1, 101, wallpaperLevel), (2, 202, wallpaperLevel),
+                                          (3, 303, wallpaperLevel), (4, 202, 19), (5, 202, wallpaperLevel)].map { id, pid, layer in
+            [kCGWindowNumber as String: NSNumber(value: id),
+             kCGWindowOwnerPID as String: NSNumber(value: pid),
+             kCGWindowLayer as String: layer]
+        }
+        let spaces: [CGWindowID: Set<UInt64>] = [1: [11], 2: [22], 3: [33], 4: [33], 5: [22]]
+        func reference(for targetSpaces: Set<UInt64>) -> CGWindowID? {
+            WindowLocator.spaceReferenceWindow(in: candidates, targetSpaces: targetSpaces, targetBounds: bounds,
+                                              bundleIdentifierForPID: bundleID,
+                                              boundsForWindow: { $0 == 2 ? desktop.offsetBy(dx: 1728, dy: 0) : desktop },
+                                              spacesForWindow: { spaces[$0] })
+        }
+        XCTAssertNil(reference(for: [11]))
+        XCTAssertEqual(reference(for: [22]), 5)
+        XCTAssertNil(reference(for: [33]))
+        XCTAssertNil(reference(for: []))
     }
 
     func testWindowServerTransformMapsThumbnailBackToNativeSurface() {

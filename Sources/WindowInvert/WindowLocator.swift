@@ -9,6 +9,7 @@ struct TargetWindow {
     let windowID: CGWindowID
     let pid: pid_t
     let axWindow: AXUIElement?
+    let bundleIdentifier: String?
 }
 
 /// Distances (in points) from each window edge to the content area.
@@ -27,6 +28,7 @@ struct WindowState {
     let isOnScreen: Bool
     let isOrderedIn: Bool
     var presentedBounds: CGRect? = nil
+    var spaceTranslation: CGPoint? = nil
 
     var isVisibleInItsSpace: Bool {
         isOrderedIn && bounds.width > 1 && bounds.height > 1
@@ -45,12 +47,24 @@ struct WindowState {
         return minimumScale <= maximumScale
     }
 
+    var hasDesktopDisplacement: Bool {
+        guard isVisibleInItsSpace, let presentedBounds, let spaceTranslation,
+              abs(presentedBounds.width - bounds.width) <= 1,
+              abs(presentedBounds.height - bounds.height) <= 1 else { return false }
+        // Show Desktop translates windows independently of the desktop. A Space swipe does not.
+        let dx = presentedBounds.minX - bounds.minX - spaceTranslation.x
+        let dy = presentedBounds.minY - bounds.minY - spaceTranslation.y
+        return dx.isFinite && dy.isFinite && (abs(dx) > 2 || abs(dy) > 2)
+    }
+
     func displayBounds(for rect: CGRect, inMissionControl: Bool) -> CGRect {
-        guard inMissionControl, let presentedBounds, bounds.width > 0, bounds.height > 0 else { return rect }
+        guard inMissionControl || hasDesktopDisplacement, let presentedBounds,
+              bounds.width > 0, bounds.height > 0 else { return rect }
+        let translation = spaceTranslation ?? .zero
         let sx = presentedBounds.width / bounds.width
         let sy = presentedBounds.height / bounds.height
-        return CGRect(x: presentedBounds.minX + (rect.minX - bounds.minX) * sx,
-                      y: presentedBounds.minY + (rect.minY - bounds.minY) * sy,
+        return CGRect(x: presentedBounds.minX - translation.x + (rect.minX - bounds.minX) * sx,
+                      y: presentedBounds.minY - translation.y + (rect.minY - bounds.minY) * sy,
                       width: rect.width * sx, height: rect.height * sy)
     }
 }
@@ -94,6 +108,7 @@ enum WindowLocator {
         }
         Log.write("frontmost app \(app?.bundleIdentifier ?? "?") pid=\(pid) (reported \(app?.processIdentifier ?? 0)); on-screen windows: "
                   + candidates.map { "\($0.id) layer=\($0.layer) \($0.bounds) '\($0.title)'" }.joined(separator: "; "))
+        let bundleIdentifier = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? app?.bundleIdentifier
 
         var axWindows: [AXUIElement] = []
         if AXIsProcessTrusted() {
@@ -109,7 +124,8 @@ enum WindowLocator {
                 let id = windowID(of: window)
                 Log.write("AX focused/main window id=\(id)")
                 if id != 0, candidates.contains(where: { $0.id == id && $0.layer == 0 }) {
-                    return TargetWindow(windowID: id, pid: pid, axWindow: window)
+                    return TargetWindow(windowID: id, pid: pid, axWindow: window,
+                                        bundleIdentifier: bundleIdentifier)
                 }
             }
         }
@@ -121,7 +137,7 @@ enum WindowLocator {
         }
         let ax = axWindows.first { windowID(of: $0) == pick.id }
         Log.write("using window-list fallback id=\(pick.id) (AX match: \(ax != nil))")
-        return TargetWindow(windowID: pick.id, pid: pid, axWindow: ax)
+        return TargetWindow(windowID: pick.id, pid: pid, axWindow: ax, bundleIdentifier: bundleIdentifier)
     }
 
     /// Some apps (e.g. Preview on macOS 27) are reported by NSWorkspace with pid -1. Fall back to
@@ -166,11 +182,45 @@ enum WindowLocator {
         let title: String
     }
 
+    static func activationPIDs(reportedPID: pid_t, bundleIdentifier: String?, runningPIDs: [pid_t],
+                               knownTargets: [TargetWindow]) -> Set<pid_t> {
+        var pids = Set(([reportedPID] + runningPIDs).filter { $0 > 0 })
+        if let bundleIdentifier {
+            pids.formUnion(knownTargets.filter { $0.bundleIdentifier == bundleIdentifier && $0.pid > 0 }.map(\.pid))
+        }
+        return pids
+    }
+
+    static func activationPIDs(for app: NSRunningApplication, knownTargets: [TargetWindow]) -> Set<pid_t> {
+        let runningPIDs = app.bundleIdentifier.map {
+            NSRunningApplication.runningApplications(withBundleIdentifier: $0).map(\.processIdentifier)
+        } ?? []
+        return activationPIDs(reportedPID: app.processIdentifier, bundleIdentifier: app.bundleIdentifier,
+                              runningPIDs: runningPIDs, knownTargets: knownTargets)
+    }
+
+    static func frontDocumentWindow(of pids: Set<pid_t>) -> CGWindowID? {
+        // Don't use the global front window here: its order may still describe the outgoing app.
+        onScreenWindows(of: pids).first(where: isDocumentWindow)?.id
+    }
+
+    static func focusedWindowID(of pid: pid_t) -> CGWindowID? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.05)
+        guard let window: AXUIElement = copyAttribute(app, kAXFocusedWindowAttribute) else { return nil }
+        let id = windowID(of: window)
+        return id == 0 ? nil : id
+    }
+
     private static func onScreenWindows(of pid: pid_t) -> [WindowInfo] {
+        onScreenWindows(of: [pid])
+    }
+
+    private static func onScreenWindows(of pids: Set<pid_t>) -> [WindowInfo] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                     kCGNullWindowID) as? [[String: Any]] else { return [] }
         return list.compactMap { info in
-            guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
+            guard let pid = info[kCGWindowOwnerPID as String] as? pid_t, pids.contains(pid),
                   let id = info[kCGWindowNumber as String] as? CGWindowID,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
@@ -184,19 +234,65 @@ enum WindowLocator {
         return _AXUIElementGetWindow(window, &id) == .success ? id : 0
     }
 
-    static func state(of windowID: CGWindowID) -> WindowState? {
+    static func state(of windowID: CGWindowID, spaceReference: CGWindowID? = nil) -> WindowState? {
         // The array must hold raw CGWindowID values, not boxed objects.
-        var value = UnsafeRawPointer(bitPattern: UInt(windowID))
-        guard let ids = CFArrayCreate(nil, &value, 1, nil),
+        let windowIDs = [windowID] + (spaceReference.map { [$0] } ?? [])
+        var values = windowIDs.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+        guard let ids = values.withUnsafeMutableBufferPointer({ CFArrayCreate(nil, $0.baseAddress, $0.count, nil) }),
               let list = CGWindowListCreateDescriptionFromArray(ids) as? [[String: Any]],
-              let info = list.first,
+              let info = list.first(where: { ($0[kCGWindowNumber as String] as? CGWindowID) == windowID }),
               let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
               let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
         let onScreen = (info[kCGWindowIsOnscreen as String] as? Bool) ?? false
+        var translation: CGPoint?
+        if let spaceReference,
+           let reference = list.first(where: { ($0[kCGWindowNumber as String] as? CGWindowID) == spaceReference }),
+           let rect = reference[kCGWindowBounds as String] as? NSDictionary,
+           let presented = CGRect(dictionaryRepresentation: rect),
+           let native = WindowServer.bounds(of: spaceReference) {
+            translation = spaceTranslation(native: native, presented: presented)
+        }
         // The public bounds include the Spaces slide. Applying them to an overlay that the
         // compositor is also sliding moves it twice; use the window's underlying bounds instead.
         return WindowState(bounds: WindowServer.bounds(of: windowID) ?? bounds, isOnScreen: onScreen,
-                           isOrderedIn: WindowServer.orderedIn(windowID) ?? onScreen, presentedBounds: bounds)
+                           isOrderedIn: WindowServer.orderedIn(windowID) ?? onScreen, presentedBounds: bounds,
+                           spaceTranslation: translation)
+    }
+
+    static func spaceTranslation(native: CGRect, presented: CGRect) -> CGPoint? {
+        guard !native.isEmpty, !presented.isEmpty,
+              abs(native.width - presented.width) <= 1, abs(native.height - presented.height) <= 1 else { return nil }
+        let offset = CGPoint(x: presented.minX - native.minX, y: presented.minY - native.minY)
+        return offset.x.isFinite && offset.y.isFinite ? offset : nil
+    }
+
+    static func spaceReferenceWindow(for target: CGWindowID) -> CGWindowID? {
+        guard let spaces = WindowServer.spaces(of: target), let bounds = WindowServer.bounds(of: target),
+              let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else { return nil }
+        return spaceReferenceWindow(in: windows, targetSpaces: spaces, targetBounds: bounds,
+                                    bundleIdentifierForPID: { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier },
+                                    boundsForWindow: WindowServer.bounds, spacesForWindow: WindowServer.spaces)
+    }
+
+    static func spaceReferenceWindow(in windows: [[String: Any]], targetSpaces: Set<UInt64>, targetBounds: CGRect,
+                                     bundleIdentifierForPID: (pid_t) -> String?,
+                                     boundsForWindow: (CGWindowID) -> CGRect?,
+                                     spacesForWindow: (CGWindowID) -> Set<UInt64>?) -> CGWindowID? {
+        guard !targetSpaces.isEmpty else { return nil }
+        // WindowManager slides the overlay's Space too; the older Dock overview does not.
+        // Its wallpaper tracks that slide without receiving the overview's window scaling.
+        let wallpaperLevel = Int(CGWindowLevelForKey(.desktopWindow)) - 1
+        for window in windows {
+            guard (window[kCGWindowLayer as String] as? Int) == wallpaperLevel,
+                  let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  bundleIdentifierForPID(pid) == "com.apple.WindowManager",
+                  let id = window[kCGWindowNumber as String] as? CGWindowID,
+                  spacesForWindow(id) == targetSpaces,
+                  let native = boundsForWindow(id),
+                  native.contains(CGPoint(x: targetBounds.midX, y: targetBounds.midY)) else { continue }
+            return id
+        }
+        return nil
     }
 
     static func missionControlState() -> MissionControlState {

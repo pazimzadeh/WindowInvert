@@ -45,9 +45,35 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var isTargetVisible = false
     private var isTargetOnScreen = false
     private var windowState: WindowState?
+    private var spaceReferenceWindowID: CGWindowID?
+    private var lastSpaceReferenceRefresh: CFTimeInterval = 0
     private(set) var isInMissionControl = false
+    private var isShowingDesktop = false
+    private var isFollowingPresentation: Bool { isInMissionControl || isShowingDesktop }
     private var hasPresentationTransform = false
     private var presentationTransformFailed = false
+    private var activation = OverlayActivation()
+    weak var diagnosticTrace: MissionControlTrace?
+    var freezesImageForDiagnostics = false {
+        didSet {
+            recordDiagnosticState()
+            if freezesImageForDiagnostics != oldValue && !freezesImageForDiagnostics && !ended { render() }
+        }
+    }
+    private var submittedDraws = 0
+    private var lastDrawSubmitted: CFTimeInterval?
+    private var isReusingDiagnosticImage = false
+
+    func recordDiagnosticState() {
+        diagnosticTrace?.recordSessionState(target: target.windowID, state: [
+            "overlay": overlayWindowID, "overlayVisible": overlay.isVisible,
+            "appKitLevel": overlay.level.rawValue, "freezeRequested": freezesImageForDiagnostics,
+            "imageReused": isReusingDiagnosticImage, "submittedDraws": submittedDraws,
+            "lastDrawSubmitted": lastDrawSubmitted as Any? ?? NSNull(),
+            "missionControl": isInMissionControl, "showDesktop": isShowingDesktop,
+            "pausedForSheet": isPausedForSheet,
+        ])
+    }
 
     private var suppressesMissionControl: Bool {
         hidesInMissionControl || !WindowServer.canTransformWindows || presentationTransformFailed
@@ -175,13 +201,29 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func tick(missionControl: MissionControlState) {
         guard !ended else { return }
-        guard let state = WindowLocator.state(of: target.windowID) else {
+        let now = CACurrentMediaTime()
+        if now - lastSpaceReferenceRefresh >= 1 {
+            let reference = WindowLocator.spaceReferenceWindow(for: target.windowID)
+            if reference != spaceReferenceWindowID {
+                Log.write("window \(target.windowID): Space motion reference \(reference.map(String.init) ?? "unavailable")")
+            }
+            spaceReferenceWindowID = reference
+            lastSpaceReferenceRefresh = now
+        }
+        guard let state = WindowLocator.state(of: target.windowID, spaceReference: spaceReferenceWindowID) else {
             end()
             return
         }
 
+        let wasFollowingPresentation = isFollowingPresentation
+        let wasShowingDesktop = isShowingDesktop
         let wasInMissionControl = isInMissionControl
         isInMissionControl = missionControl.isActive(for: state, wasActive: wasInMissionControl)
+        let showingDesktop = !isInMissionControl && state.hasDesktopDisplacement
+        if showingDesktop != isShowingDesktop {
+            Log.write("window \(target.windowID): Show Desktop \(showingDesktop ? "entered" : "exited")")
+            isShowingDesktop = showingDesktop
+        }
         if wasInMissionControl != isInMissionControl {
             Log.write("window \(target.windowID): Mission Control \(isInMissionControl ? "entered" : "exited"), "
                       + "hide=\(hidesInMissionControl), transform available=\(WindowServer.canTransformWindows), "
@@ -194,7 +236,10 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         if visible != isTargetVisible {
             isTargetVisible = visible
             Log.write("window \(target.windowID): target \(visible ? "ordered in" : "hidden/minimized"), bounds \(state.bounds)")
-            if !visible { overlay.orderOut(nil) }
+            if !visible {
+                activation.cancel()
+                overlay.orderOut(nil)
+            }
         }
         guard visible else { return }
         matchOverlaySpace()
@@ -213,8 +258,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             render()
         }
-        if isInMissionControl || wasInMissionControl { render() }
-        if isTargetOnScreen && !isInMissionControl { updateStacking() }
+        if isFollowingPresentation || wasFollowingPresentation {
+            render(reusingImage: Self.reusesImageForPresentation(isInMissionControl: isInMissionControl,
+                isShowingDesktop: isShowingDesktop, wasShowingDesktop: wasShowingDesktop))
+        }
+        if isTargetOnScreen && !isFollowingPresentation { updateStacking() }
         if !overlay.isVisible && latestFrame != nil {
             render()
         }
@@ -222,6 +270,20 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func matchOverlaySpace() {
         WindowServer.matchSpaces(of: CGWindowID(overlay.windowNumber), to: target.windowID)
+    }
+
+    func cancelActivation() { activation.cancel() }
+
+    func prepareForActivation() {
+        guard !ended, isTargetOnScreen, overlay.isVisible, !isPausedForSheet else {
+            Log.write("window \(target.windowID): activation skipped, ended=\(ended), onScreen=\(isTargetOnScreen), overlayVisible=\(overlay.isVisible), sheet=\(isPausedForSheet)")
+            return
+        }
+        activation.begin(at: CACurrentMediaTime())
+        overlay.level = .floating
+        overlay.order(.above, relativeTo: Int(target.windowID))
+        recordDiagnosticState()
+        Log.write("window \(target.windowID): activation, preparing overlay order")
     }
 
     /// Keeps the overlay directly above the target. The window server keeps an app's sheets and
@@ -255,12 +317,13 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // While the target is the front-most normal window, float the overlay one level up. Clicking the
         // window's frame raises it above normal-level windows on every frame until mouse-up, and fighting
         // that with restacking makes the inversion flicker.
-        let level = preferredLevel(above: above)
+        let level = activation.level(aboveWindowsLevel: preferredLevel(above: above), at: CACurrentMediaTime())
         let targetIsFront = level == .floating
         if overlay.level != level {
             Log.write("window \(target.windowID): \(targetIsFront ? "front-most, floating overlay" : "covered, normal-level overlay")")
             overlay.level = level
             overlay.order(.above, relativeTo: Int(target.windowID))
+            recordDiagnosticState()
             return
         }
         guard !targetIsFront else { return }
@@ -294,7 +357,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isSampling = false
-                guard !self.isInMissionControl else { return }
+                guard !self.isFollowingPresentation else { return }
                 if samples.isEmpty != self.backgroundSamples.isEmpty {
                     Log.write("window \(self.target.windowID): background samples \(samples)")
                 }
@@ -473,8 +536,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let frame = Frame(pixelBuffer: pixelBuffer, contentRect: contentRect, capturedPoints: capturedPoints)
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.ended else { return }
-            // ScreenCaptureKit's overview frames may contain a clipped, already-scaled thumbnail.
-            guard !self.isInMissionControl else { return }
+            // Compositor animations can produce clipped or already-scaled capture frames.
+            guard !self.isFollowingPresentation else { return }
             self.latestFrame = frame
             self.render()
         }
@@ -488,6 +551,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     static let debug = ProcessInfo.processInfo.environment["WINDOWINVERT_DEBUG"] != nil
 
     // MARK: - Rendering
+
+    static func reusesImageForPresentation(isInMissionControl: Bool, isShowingDesktop: Bool,
+                                           wasShowingDesktop: Bool) -> Bool {
+        !isInMissionControl && (isShowingDesktop || wasShowingDesktop)
+    }
+
+    static func reusesImageForDiagnostics(requested: Bool, hasImage: Bool,
+                                          visible: Bool, frameMatches: Bool) -> Bool {
+        requested && hasImage && visible && frameMatches
+    }
 
     /// The part of the frame showing the window's CG bounds, in buffer pixels.
     private func windowPixelRect(of frame: Frame) -> CGRect {
@@ -512,13 +585,23 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    private func render() {
+    private func render(reusingImage: Bool = false) {
         guard !ended, isTargetVisible, !isPausedForSheet, let frame = latestFrame, !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return }
         guard !(isInMissionControl && suppressesMissionControl) else { return }
 
         let overlayRect = scope == .content ? bounds.inset(by: insets) : bounds
         let displayRect = windowState?.displayBounds(for: overlayRect, inMissionControl: isInMissionControl) ?? overlayRect
         let cocoaRect = overlayRect.flippedToCocoa
+
+        // Show Desktop only translates the frozen surface. Don't wait for another Metal drawable
+        // before moving it, including the final transform reset when the window returns.
+        isReusingDiagnosticImage = Self.reusesImageForDiagnostics(requested: freezesImageForDiagnostics,
+            hasImage: submittedDraws > 0, visible: overlay.isVisible, frameMatches: overlay.frame == cocoaRect)
+        if (reusingImage || isReusingDiagnosticImage) && overlay.isVisible && overlay.frame == cocoaRect {
+            _ = updatePresentation(from: overlayRect, to: displayRect)
+            recordDiagnosticState()
+            return
+        }
 
         updateCaptureExtraTop(from: frame)
         let buffer = CGSize(width: CVPixelBufferGetWidth(frame.pixelBuffer), height: CVPixelBufferGetHeight(frame.pixelBuffer))
@@ -555,20 +638,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                    width: hole.width * scale, height: hole.height * scale)
         }
         let captureScale = cr.height / max(1, bounds.height)
-        InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode,
+        let submitted = InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode,
                                    contrast: contrast, keep: keepColor(for: frame), keepRect: keepRect, edge: Float(3 * captureScale),
                                    holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
+        if submitted {
+            submittedDraws += 1
+            lastDrawSubmitted = CACurrentMediaTime()
+        }
         CATransaction.commit()
 
-        if isInMissionControl || hasPresentationTransform {
-            guard WindowServer.present(CGWindowID(overlay.windowNumber), from: overlayRect, at: displayRect) else {
-                presentationTransformFailed = true
-                overlay.orderOut(nil)
-                Log.write("window \(target.windowID): Mission Control transform failed; hiding overlay")
-                return
-            }
-            hasPresentationTransform = isInMissionControl
-        }
+        guard updatePresentation(from: overlayRect, to: displayRect) else { return }
 
         if !overlay.isVisible && isTargetOnScreen {
             Log.write("window \(target.windowID): showing overlay")
@@ -576,6 +655,21 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             overlay.order(.above, relativeTo: Int(target.windowID))
             matchOverlaySpace()
         }
+        recordDiagnosticState()
+    }
+
+    private func updatePresentation(from overlayRect: CGRect, to displayRect: CGRect) -> Bool {
+        if isFollowingPresentation || hasPresentationTransform {
+            guard WindowServer.present(CGWindowID(overlay.windowNumber), from: overlayRect, at: displayRect) else {
+                presentationTransformFailed = true
+                overlay.orderOut(nil)
+                Log.write("window \(target.windowID): presentation transform failed; hiding overlay")
+                return false
+            }
+            hasPresentationTransform = isFollowingPresentation
+        }
+
+        return true
     }
 
     enum SessionError: LocalizedError {

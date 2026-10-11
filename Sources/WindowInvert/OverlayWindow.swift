@@ -1,6 +1,23 @@
 import AppKit
 import QuartzCore
 
+struct OverlayActivation {
+    private var deadline: CFTimeInterval?
+
+    mutating func begin(at time: CFTimeInterval) { deadline = time + 0.25 }
+    mutating func cancel() { deadline = nil }
+
+    mutating func level(aboveWindowsLevel level: NSWindow.Level, at time: CFTimeInterval) -> NSWindow.Level {
+        guard let deadline else { return level }
+        // Activation arrives before the compositor's window-order list catches up.
+        if level == .floating || time >= deadline {
+            cancel()
+            return level
+        }
+        return .floating
+    }
+}
+
 /// A borderless, click-through window that shows the inverted copy of the target window.
 final class OverlayWindow: NSWindow {
     let metalLayer = CAMetalLayer()

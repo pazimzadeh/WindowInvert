@@ -143,9 +143,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                               action: #selector(traceMissionControl), keyEquivalent: "")
         if controller.isTracingMissionControl || controller.sessions.isEmpty { trace.action = nil }
         menu.addItem(trace)
+        let activationTrace = NSMenuItem(title: controller.isTracingMissionControl ? "Recording Diagnostics…"
+                                        : "Record Activation Diagnostics (20 seconds, frozen image)",
+                                        action: #selector(traceActivation), keyEquivalent: "")
+        if controller.isTracingMissionControl || controller.sessions.isEmpty { activationTrace.action = nil }
+        menu.addItem(activationTrace)
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
 
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "About WindowInvert", action: #selector(showAbout), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit WindowInvert", action: #selector(quit), keyEquivalent: "q"))
 
         for item in menu.items where item.action != nil {
@@ -154,6 +160,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func invertWindow() { controller.toggle(.window) }
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(nil)
+    }
     @objc private func invertContent() { controller.toggle(.content) }
     @objc private func stopAll() { controller.stopAll() }
     @objc private func switchStyleFromMenu() { switchStyle() }
@@ -188,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func traceMissionControl() { controller.traceMissionControl() }
+    @objc private func traceActivation() { controller.traceMissionControl(freezesImage: true) }
 
     @objc private func toggleLaunchAtLogin() {
         do {
