@@ -131,8 +131,9 @@ final class InversionController {
     }
 
     @objc private func tick() {
+        let missionControlActive = WindowLocator.isMissionControlActive()
         for session in Array(sessions.values) {
-            session.tick()
+            session.tick(missionControlActive: missionControlActive)
         }
     }
 }

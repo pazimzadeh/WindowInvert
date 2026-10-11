@@ -26,9 +26,19 @@ struct WindowState {
     let bounds: CGRect
     let isOnScreen: Bool
     let isOrderedIn: Bool
+    var presentedBounds: CGRect? = nil
 
     var isVisibleInItsSpace: Bool {
         isOrderedIn && bounds.width > 1 && bounds.height > 1
+    }
+
+    func displayBounds(for rect: CGRect, inMissionControl: Bool) -> CGRect {
+        guard inMissionControl, let presentedBounds, bounds.width > 0, bounds.height > 0 else { return rect }
+        let sx = presentedBounds.width / bounds.width
+        let sy = presentedBounds.height / bounds.height
+        return CGRect(x: presentedBounds.minX + (rect.minX - bounds.minX) * sx,
+                      y: presentedBounds.minY + (rect.minY - bounds.minY) * sy,
+                      width: rect.width * sx, height: rect.height * sy)
     }
 }
 
@@ -162,7 +172,23 @@ enum WindowLocator {
         // The public bounds include the Spaces slide. Applying them to an overlay that the
         // compositor is also sliding moves it twice; use the window's underlying bounds instead.
         return WindowState(bounds: WindowServer.bounds(of: windowID) ?? bounds, isOnScreen: onScreen,
-                           isOrderedIn: WindowServer.orderedIn(windowID) ?? onScreen)
+                           isOrderedIn: WindowServer.orderedIn(windowID) ?? onScreen, presentedBounds: bounds)
+    }
+
+    static func isMissionControlActive() -> Bool {
+        guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        return isMissionControlActive(in: windows)
+    }
+
+    static func isMissionControlActive(in windows: [[String: Any]]) -> Bool {
+        // Dock's overview surface exists throughout entry/exit, before its AX notifications arrive.
+        return windows.contains {
+            $0[kCGWindowOwnerName as String] as? String == "Dock"
+                && $0[kCGWindowLayer as String] as? Int == 18
+                && ($0[kCGWindowName as String] as? String ?? "").isEmpty
+        }
     }
 
     struct StackedWindow {

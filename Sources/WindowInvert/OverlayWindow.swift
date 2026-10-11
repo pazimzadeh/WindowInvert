@@ -26,14 +26,9 @@ final class OverlayWindow: NSWindow {
         contentView = view
     }
 
-    /// Mission Control behavior is independent of the target's Space membership.
-    var hidesInMissionControl = true {
-        didSet { updateCollectionBehavior() }
-    }
-
     private func updateCollectionBehavior() {
-        collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle,
-                              hidesInMissionControl ? .transient : .stationary]
+        // Track/hide explicitly: .transient fades a full-size copy while the target moves away.
+        collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle, .stationary]
     }
 
     /// Full-screen windows cover the menu bar area; don't let AppKit push the overlay below it.
