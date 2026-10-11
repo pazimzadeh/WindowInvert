@@ -186,8 +186,14 @@ final class InvertRenderer {
         CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, pixelBuffer, nil, .bgra8Unorm,
                                                   width, height, 0, &cvTexture)
         guard let cvTexture, let texture = CVMetalTextureGetTexture(cvTexture),
-              let drawable = layer.nextDrawable(),
               let commandBuffer = queue.makeCommandBuffer() else { return }
+        let drawableStart = CACurrentMediaTime()
+        let nextDrawable = layer.nextDrawable()
+        let drawableWait = CACurrentMediaTime() - drawableStart
+        if drawableWait > 0.05 {
+            Log.write("Metal drawable wait: \(Int(drawableWait * 1000)) ms")
+        }
+        guard let drawable = nextDrawable else { return }
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
@@ -217,7 +223,12 @@ final class InvertRenderer {
 
         commandBuffer.addCompletedHandler { _ in _ = cvTexture }
         commandBuffer.commit()
+        let scheduleStart = CACurrentMediaTime()
         commandBuffer.waitUntilScheduled()
+        let scheduleWait = CACurrentMediaTime() - scheduleStart
+        if scheduleWait > 0.05 {
+            Log.write("Metal scheduling wait: \(Int(scheduleWait * 1000)) ms")
+        }
         drawable.present()
     }
 }

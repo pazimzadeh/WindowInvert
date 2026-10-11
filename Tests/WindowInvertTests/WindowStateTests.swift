@@ -4,6 +4,22 @@ import XCTest
 final class WindowStateTests: XCTestCase {
     private let bounds = CGRect(x: 100, y: 100, width: 800, height: 600)
 
+    func testShowDesktopReusesTheImageThroughEntryMotionAndReturn() {
+        for (wasShowing, isShowing) in [(false, true), (true, true), (true, false)] {
+            XCTAssertTrue(InversionSession.reusesImageForPresentation(isInMissionControl: false,
+                isShowingDesktop: isShowing, wasShowingDesktop: wasShowing))
+        }
+    }
+
+    func testShowDesktopImageReuseDoesNotChangeMissionControlOrNormalDrawing() {
+        XCTAssertFalse(InversionSession.reusesImageForPresentation(isInMissionControl: false,
+            isShowingDesktop: false, wasShowingDesktop: false))
+        for wasShowing in [false, true] {
+            XCTAssertFalse(InversionSession.reusesImageForPresentation(isInMissionControl: true,
+                isShowingDesktop: false, wasShowingDesktop: wasShowing))
+        }
+    }
+
     func testSettingsAndOtherAppsLowerTheOverlay() {
         let overlay = WindowLocator.StackedWindow(id: 1, pid: 20, layer: 0, bounds: bounds, title: "")
         for pid in [pid_t(20), pid_t(30)] {
