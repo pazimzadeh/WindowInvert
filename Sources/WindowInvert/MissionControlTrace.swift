@@ -9,6 +9,8 @@ final class MissionControlTrace {
     private var trackingTicks = 0
     private var lastTrackingTick: CFTimeInterval?
     private var detectedOverview: Bool?
+    private var spacesStripVisible: Bool?
+    private var activeTargets: [CGWindowID] = []
     private var timer: DispatchSourceTimer?
     private var samples: [[String: Any]] = []
     private let startTime = CACurrentMediaTime()
@@ -17,7 +19,7 @@ final class MissionControlTrace {
     init(targets: [CGWindowID: CGWindowID], hidesInMissionControl: Bool) {
         self.targets = targets
         metadata = [
-            "formatVersion": 1,
+            "formatVersion": 2,
             "appVersion": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development",
             "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "startedAt": ISO8601DateFormatter().string(from: Date()),
@@ -29,11 +31,13 @@ final class MissionControlTrace {
         ]
     }
 
-    func recordTrackingTick(missionControlActive: Bool) {
+    func recordTrackingTick(missionControl: MissionControlState, activeTargets: [CGWindowID]) {
         lock.lock()
         trackingTicks += 1
         lastTrackingTick = CACurrentMediaTime() - startTime
-        detectedOverview = missionControlActive
+        detectedOverview = missionControl.overviewVisible
+        spacesStripVisible = missionControl.spacesStripVisible
+        self.activeTargets = activeTargets
         lock.unlock()
     }
 
@@ -57,7 +61,9 @@ final class MissionControlTrace {
         lock.lock()
         var sample: [String: Any] = ["time": time, "trackingTicks": trackingTicks,
                                      "lastTrackingTick": lastTrackingTick as Any? ?? NSNull(),
-                                     "detectedOverview": detectedOverview as Any? ?? NSNull()]
+                                     "overviewSurfaceVisible": detectedOverview as Any? ?? NSNull(),
+                                     "spacesStripVisible": spacesStripVisible as Any? ?? NSNull(),
+                                     "activeTargets": activeTargets]
         lock.unlock()
         var owners: [pid_t: String] = [:]
         for bundle in ["com.apple.dock", "com.apple.WindowManager"] {

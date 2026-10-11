@@ -32,6 +32,19 @@ struct WindowState {
         isOrderedIn && bounds.width > 1 && bounds.height > 1
     }
 
+    var hasOverviewScale: Bool {
+        guard isOnScreen, isVisibleInItsSpace, let presentedBounds,
+              bounds.width.isFinite, bounds.height.isFinite,
+              presentedBounds.width > 1, presentedBounds.height > 1,
+              presentedBounds.width < bounds.width, presentedBounds.height < bounds.height else { return false }
+        // Public bounds round to whole points. Require a uniform shrink within that rounding.
+        let minimumScale = max((presentedBounds.width - 1) / bounds.width,
+                               (presentedBounds.height - 1) / bounds.height)
+        let maximumScale = min((presentedBounds.width + 1) / bounds.width,
+                               (presentedBounds.height + 1) / bounds.height)
+        return minimumScale <= maximumScale
+    }
+
     func displayBounds(for rect: CGRect, inMissionControl: Bool) -> CGRect {
         guard inMissionControl, let presentedBounds, bounds.width > 0, bounds.height > 0 else { return rect }
         let sx = presentedBounds.width / bounds.width
@@ -39,6 +52,17 @@ struct WindowState {
         return CGRect(x: presentedBounds.minX + (rect.minX - bounds.minX) * sx,
                       y: presentedBounds.minY + (rect.minY - bounds.minY) * sy,
                       width: rect.width * sx, height: rect.height * sy)
+    }
+}
+
+struct MissionControlState {
+    var overviewVisible = false
+    var spacesStripVisible = false
+
+    func isActive(for window: WindowState, wasActive: Bool) -> Bool {
+        // The overview surface arrives after an interactive gesture has already begun.
+        // Latch through the return animation, including cancelled partial gestures.
+        overviewVisible || (spacesStripVisible && (wasActive || window.hasOverviewScale))
     }
 }
 
@@ -175,26 +199,32 @@ enum WindowLocator {
                            isOrderedIn: WindowServer.orderedIn(windowID) ?? onScreen, presentedBounds: bounds)
     }
 
-    static func isMissionControlActive() -> Bool {
+    static func missionControlState() -> MissionControlState {
         guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
-            return false
+            return MissionControlState()
         }
-        return isMissionControlActive(in: windows) { pid in
+        return missionControlState(in: windows) { pid in
             NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
         }
     }
 
-    static func isMissionControlActive(in windows: [[String: Any]],
-                                       bundleIdentifierForPID: (pid_t) -> String?) -> Bool {
+    static func missionControlState(in windows: [[String: Any]],
+                                    bundleIdentifierForPID: (pid_t) -> String?) -> MissionControlState {
         // macOS 27 moved the overview from Dock (18) to WindowManager (19).
         // Resolve the actual owner: display names are localized and processes can restart.
-        return windows.contains {
-            guard let layer = $0[kCGWindowLayer as String] as? Int, layer == 18 || layer == 19,
-                  let pid = $0[kCGWindowOwnerPID as String] as? pid_t, pid > 0,
-                  let bundleID = bundleIdentifierForPID(pid) else { return false }
-            return (layer == 18 && bundleID == "com.apple.dock")
-                || (layer == 19 && bundleID == "com.apple.WindowManager")
+        var state = MissionControlState()
+        for window in windows {
+            guard let layer = window[kCGWindowLayer as String] as? Int, [14, 18, 19].contains(layer),
+                  let pid = window[kCGWindowOwnerPID as String] as? pid_t, pid > 0,
+                  let bundleID = bundleIdentifierForPID(pid) else { continue }
+            if (layer == 18 && bundleID == "com.apple.dock") || (layer == 19 && bundleID == "com.apple.WindowManager") {
+                state.overviewVisible = true
+            }
+            if layer == 14 && bundleID == "com.apple.WindowManager" {
+                state.spacesStripVisible = true
+            }
         }
+        return state
     }
 
     struct StackedWindow {

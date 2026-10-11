@@ -133,11 +133,12 @@ final class InversionController {
     }
 
     @objc private func tick() {
-        let missionControlActive = WindowLocator.isMissionControlActive()
-        missionControlTrace?.recordTrackingTick(missionControlActive: missionControlActive)
+        let missionControl = WindowLocator.missionControlState()
         for session in Array(sessions.values) {
-            session.tick(missionControlActive: missionControlActive)
+            session.tick(missionControl: missionControl)
         }
+        missionControlTrace?.recordTrackingTick(missionControl: missionControl,
+            activeTargets: sessions.values.filter(\.isInMissionControl).map(\.target.windowID))
     }
 
     func traceMissionControl() {

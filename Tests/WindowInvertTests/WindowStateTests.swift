@@ -61,9 +61,9 @@ final class WindowStateTests: XCTestCase {
                                           kCGWindowLayer as String: layer,
                                           kCGWindowOwnerName as String: "Localized name",
                                           kCGWindowName as String: "Overview"]
-            XCTAssertTrue(WindowLocator.isMissionControlActive(in: [surface], bundleIdentifierForPID: bundleID))
+            XCTAssertTrue(WindowLocator.missionControlState(in: [surface], bundleIdentifierForPID: bundleID).overviewVisible)
         }
-        XCTAssertFalse(WindowLocator.isMissionControlActive(in: [], bundleIdentifierForPID: bundleID))
+        XCTAssertFalse(WindowLocator.missionControlState(in: [], bundleIdentifierForPID: bundleID).overviewVisible)
     }
 
     func testMissionControlIgnoresDockBarSpaceStripsAndOtherOwners() {
@@ -72,18 +72,70 @@ final class WindowStateTests: XCTestCase {
             let window: [String: Any] = [kCGWindowOwnerPID as String: NSNumber(value: pid),
                                          kCGWindowLayer as String: layer,
                                          kCGWindowOwnerName as String: "Dock"]
-            XCTAssertFalse(WindowLocator.isMissionControlActive(in: [window], bundleIdentifierForPID: bundleID))
+            XCTAssertFalse(WindowLocator.missionControlState(in: [window], bundleIdentifierForPID: bundleID).overviewVisible)
         }
-        XCTAssertFalse(WindowLocator.isMissionControlActive(in: [[:]], bundleIdentifierForPID: bundleID))
+        XCTAssertFalse(WindowLocator.missionControlState(in: [[:]], bundleIdentifierForPID: bundleID).overviewVisible)
     }
 
     func testMissionControlResolvesTheCurrentProcessInsteadOfCachingItsPID() {
         let window: [String: Any] = [kCGWindowOwnerPID as String: NSNumber(value: 505), kCGWindowLayer as String: 19]
-        XCTAssertTrue(WindowLocator.isMissionControlActive(in: [window]) { pid in
+        XCTAssertTrue(WindowLocator.missionControlState(in: [window]) { pid in
             XCTAssertEqual(pid, 505)
             return "com.apple.WindowManager"
-        })
-        XCTAssertFalse(WindowLocator.isMissionControlActive(in: [window]) { _ in nil })
+        }.overviewVisible)
+        XCTAssertFalse(WindowLocator.missionControlState(in: [window]) { _ in nil }.overviewVisible)
+    }
+
+    func testPartialGestureStartsBeforeOverviewAndStaysActiveUntilStripCloses() {
+        let native = CGRect(x: 862, y: 33, width: 864, height: 1084)
+        let resting = WindowState(bounds: native, isOnScreen: true, isOrderedIn: true, presentedBounds: native)
+        // First shrinking frame from the macOS 27 trace; no layer-19 overview appeared during this gesture.
+        let partial = WindowState(bounds: native, isOnScreen: true, isOrderedIn: true,
+                                  presentedBounds: CGRect(x: 867, y: 34, width: 859, height: 1078))
+        let strip = MissionControlState(spacesStripVisible: true)
+        XCTAssertFalse(strip.isActive(for: resting, wasActive: false))
+        XCTAssertTrue(strip.isActive(for: partial, wasActive: false))
+        XCTAssertTrue(strip.isActive(for: partial, wasActive: true))
+        XCTAssertTrue(strip.isActive(for: resting, wasActive: true))
+        XCTAssertFalse(MissionControlState().isActive(for: resting, wasActive: true))
+    }
+
+    func testOverviewExitTracksReturnAfterOverviewSurfaceDisappears() {
+        let resting = WindowState(bounds: bounds, isOnScreen: true, isOrderedIn: true, presentedBounds: bounds)
+        let thumbnail = WindowState(bounds: bounds, isOnScreen: true, isOrderedIn: true,
+                                    presentedBounds: CGRect(x: 20, y: 200, width: 400, height: 300))
+        XCTAssertTrue(MissionControlState(overviewVisible: true).isActive(for: thumbnail, wasActive: false))
+        let strip = MissionControlState(spacesStripVisible: true)
+        XCTAssertTrue(strip.isActive(for: thumbnail, wasActive: true))
+        XCTAssertTrue(strip.isActive(for: resting, wasActive: true))
+        XCTAssertFalse(MissionControlState().isActive(for: resting, wasActive: true))
+    }
+
+    func testStripAndUniformShrinkAreBothRequiredToStartGesture() {
+        let strip = MissionControlState(spacesStripVisible: true)
+        for presented in [bounds, bounds.offsetBy(dx: -400, dy: 0),
+                          CGRect(x: 100, y: 100, width: 400, height: 500)] {
+            let state = WindowState(bounds: bounds, isOnScreen: true, isOrderedIn: true, presentedBounds: presented)
+            XCTAssertFalse(strip.isActive(for: state, wasActive: false))
+        }
+        let resized = CGRect(x: 100, y: 100, width: 400, height: 300)
+        let resize = WindowState(bounds: resized, isOnScreen: true, isOrderedIn: true, presentedBounds: resized)
+        XCTAssertFalse(strip.isActive(for: resize, wasActive: false))
+        let scaled = WindowState(bounds: bounds, isOnScreen: true, isOrderedIn: true, presentedBounds: resized)
+        XCTAssertFalse(MissionControlState().isActive(for: scaled, wasActive: false))
+        XCTAssertTrue(strip.isActive(for: scaled, wasActive: false))
+        XCTAssertFalse(strip.isActive(for: WindowState(bounds: bounds, isOnScreen: true, isOrderedIn: true),
+                                      wasActive: false))
+    }
+
+    func testWindowManagerStripIsDistinctFromTheSettledOverview() {
+        for pid in [101, 202, 303] {
+            let strip: [String: Any] = [kCGWindowOwnerPID as String: NSNumber(value: pid),
+                                        kCGWindowLayer as String: 14]
+            let state = WindowLocator.missionControlState(in: [strip], bundleIdentifierForPID: bundleID)
+            XCTAssertEqual(state.spacesStripVisible, pid == 202)
+            XCTAssertFalse(state.overviewVisible)
+        }
     }
 
     private func bundleID(for pid: pid_t) -> String? {

@@ -45,7 +45,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var isTargetVisible = false
     private var isTargetOnScreen = false
     private var windowState: WindowState?
-    private var isInMissionControl = false
+    private(set) var isInMissionControl = false
     private var hasPresentationTransform = false
     private var presentationTransformFailed = false
 
@@ -173,7 +173,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - Tracking (called every display refresh)
 
-    func tick(missionControlActive: Bool) {
+    func tick(missionControl: MissionControlState) {
         guard !ended else { return }
         guard let state = WindowLocator.state(of: target.windowID) else {
             end()
@@ -181,10 +181,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
 
         let wasInMissionControl = isInMissionControl
-        isInMissionControl = missionControlActive
+        isInMissionControl = missionControl.isActive(for: state, wasActive: wasInMissionControl)
         if wasInMissionControl != isInMissionControl {
             Log.write("window \(target.windowID): Mission Control \(isInMissionControl ? "entered" : "exited"), "
-                      + "hide=\(hidesInMissionControl), transform available=\(WindowServer.canTransformWindows)")
+                      + "hide=\(hidesInMissionControl), transform available=\(WindowServer.canTransformWindows), "
+                      + "overview=\(missionControl.overviewVisible), strip=\(missionControl.spacesStripVisible), scaled=\(state.hasOverviewScale)")
         }
         windowState = state
         isTargetOnScreen = state.isOnScreen
