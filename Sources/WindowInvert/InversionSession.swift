@@ -254,7 +254,10 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     func cancelActivation() { activation.cancel() }
 
     func prepareForActivation() {
-        guard !ended, isTargetOnScreen, overlay.isVisible, !isPausedForSheet else { return }
+        guard !ended, isTargetOnScreen, overlay.isVisible, !isPausedForSheet else {
+            Log.write("window \(target.windowID): activation skipped, ended=\(ended), onScreen=\(isTargetOnScreen), overlayVisible=\(overlay.isVisible), sheet=\(isPausedForSheet)")
+            return
+        }
         activation.begin(at: CACurrentMediaTime())
         overlay.level = .floating
         overlay.order(.above, relativeTo: Int(target.windowID))

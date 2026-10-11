@@ -63,20 +63,43 @@ final class InversionController {
 
     @objc private func applicationActivated(_ notification: Notification) {
         guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        sessions.values.forEach { $0.cancelActivation() }
-        if let id = WindowLocator.frontDocumentWindow(of: app) {
-            sessions[id]?.prepareForActivation()
+        let pids = WindowLocator.activationPIDs(for: app, knownTargets: sessions.values.map(\.target))
+        applicationActivated(pids: pids, source: "Workspace \(app.bundleIdentifier ?? "?") reported pid=\(app.processIdentifier)")
+    }
+
+    private func applicationActivated(pids: Set<pid_t>, source: String) {
+        guard !sessions.isEmpty else { return }
+        let id = WindowLocator.frontDocumentWindow(of: pids)
+        Log.write("activation: \(source), pids=\(pids.sorted()), window=\(id.map(String.init) ?? "unresolved")")
+        prepareForActivation(windowID: id, activePIDs: pids)
+    }
+
+    private func prepareForActivation(windowID: CGWindowID?, activePIDs: Set<pid_t>) {
+        for session in sessions.values {
+            if session.target.windowID == windowID {
+                session.prepareForActivation()
+            } else if windowID != nil || !activePIDs.contains(session.target.pid) {
+                session.cancelActivation()
+            }
         }
     }
 
     private func focusedWindowChanged(_ element: AXUIElement) {
         var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success,
-              NSRunningApplication(processIdentifier: pid)?.isActive == true else { return }
-        sessions.values.forEach { $0.cancelActivation() }
-        if let id = WindowLocator.focusedWindowID(of: pid) {
-            sessions[id]?.prepareForActivation()
+        guard AXUIElementGetPid(element, &pid) == .success else { return }
+        let activePIDs = NSWorkspace.shared.frontmostApplication.map {
+            WindowLocator.activationPIDs(for: $0, knownTargets: sessions.values.map(\.target))
+        } ?? []
+        let isActive = activePIDs.isEmpty ? NSRunningApplication(processIdentifier: pid)?.isActive == true : activePIDs.contains(pid)
+        guard isActive else {
+            Log.write("focus event ignored: pid=\(pid), active pids=\(activePIDs.sorted())")
+            return
         }
+        guard let id = WindowLocator.focusedWindowID(of: pid) else {
+            Log.write("focus lookup unresolved: pid=\(pid); retaining activation hold")
+            return
+        }
+        prepareForActivation(windowID: id, activePIDs: [pid])
     }
 
     private func updateFocusObservers() {
@@ -89,14 +112,26 @@ final class InversionController {
         guard AXIsProcessTrusted() else { return }
         for pid in pids where focusObservers[pid] == nil {
             var observer: AXObserver?
-            let callback: AXObserverCallback = { _, element, _, context in
+            let callback: AXObserverCallback = { _, element, notification, context in
                 guard let context else { return }
-                Unmanaged<InversionController>.fromOpaque(context).takeUnretainedValue().focusedWindowChanged(element)
+                let controller = Unmanaged<InversionController>.fromOpaque(context).takeUnretainedValue()
+                if notification as String == kAXApplicationActivatedNotification {
+                    var pid: pid_t = 0
+                    guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return }
+                    controller.applicationActivated(pids: [pid], source: "Accessibility")
+                } else {
+                    controller.focusedWindowChanged(element)
+                }
             }
-            guard AXObserverCreate(pid, callback, &observer) == .success, let observer,
-                  AXObserverAddNotification(observer, AXUIElementCreateApplication(pid),
-                    kAXFocusedWindowChangedNotification as CFString,
-                    Unmanaged.passUnretained(self).toOpaque()) == .success else { continue }
+            guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { continue }
+            var registered = false
+            for notification in [kAXFocusedWindowChangedNotification, kAXApplicationActivatedNotification] {
+                let result = AXObserverAddNotification(observer, AXUIElementCreateApplication(pid),
+                    notification as CFString, Unmanaged.passUnretained(self).toOpaque())
+                if result == .success { registered = true }
+                else { Log.write("AX observer pid=\(pid) \(notification) failed: \(result.rawValue)") }
+            }
+            guard registered else { continue }
             focusObservers[pid] = observer
             CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }

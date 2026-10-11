@@ -2,6 +2,27 @@ import XCTest
 @testable import WindowInvert
 
 final class OverlayActivationTests: XCTestCase {
+    private let preview = TargetWindow(windowID: 51275, pid: 2928, axWindow: nil,
+                                       bundleIdentifier: "com.apple.Preview")
+
+    func testActivationUsesKnownWindowOwnerWhenWorkspaceReportsInvalidPID() {
+        XCTAssertEqual(WindowLocator.activationPIDs(reportedPID: -1, bundleIdentifier: "com.apple.Preview",
+            runningPIDs: [-1], knownTargets: [preview]), [2928])
+    }
+
+    func testActivationIncludesKnownOwnerAlongsideWindowlessHelperProcess() {
+        XCTAssertEqual(WindowLocator.activationPIDs(reportedPID: 99, bundleIdentifier: "com.apple.Preview",
+            runningPIDs: [99, -1], knownTargets: [preview]), [99, 2928])
+    }
+
+    func testActivationDoesNotBorrowAnotherAppsWindowOwnerOrMatchUnknownIdentity() {
+        XCTAssertEqual(WindowLocator.activationPIDs(reportedPID: 50, bundleIdentifier: "com.apple.finder",
+            runningPIDs: [50], knownTargets: [preview]), [50])
+        let unknown = TargetWindow(windowID: 9, pid: 90, axWindow: nil, bundleIdentifier: nil)
+        XCTAssertTrue(WindowLocator.activationPIDs(reportedPID: -1, bundleIdentifier: nil,
+            runningPIDs: [], knownTargets: [preview, unknown]).isEmpty)
+    }
+
     func testActivationBridgesStaleOrderUntilWindowReachesFront() {
         var activation = OverlayActivation()
         XCTAssertEqual(activation.level(aboveWindowsLevel: .normal, at: 0), .normal)

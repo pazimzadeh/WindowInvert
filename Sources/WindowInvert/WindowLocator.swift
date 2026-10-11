@@ -9,6 +9,7 @@ struct TargetWindow {
     let windowID: CGWindowID
     let pid: pid_t
     let axWindow: AXUIElement?
+    let bundleIdentifier: String?
 }
 
 /// Distances (in points) from each window edge to the content area.
@@ -107,6 +108,7 @@ enum WindowLocator {
         }
         Log.write("frontmost app \(app?.bundleIdentifier ?? "?") pid=\(pid) (reported \(app?.processIdentifier ?? 0)); on-screen windows: "
                   + candidates.map { "\($0.id) layer=\($0.layer) \($0.bounds) '\($0.title)'" }.joined(separator: "; "))
+        let bundleIdentifier = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? app?.bundleIdentifier
 
         var axWindows: [AXUIElement] = []
         if AXIsProcessTrusted() {
@@ -122,7 +124,8 @@ enum WindowLocator {
                 let id = windowID(of: window)
                 Log.write("AX focused/main window id=\(id)")
                 if id != 0, candidates.contains(where: { $0.id == id && $0.layer == 0 }) {
-                    return TargetWindow(windowID: id, pid: pid, axWindow: window)
+                    return TargetWindow(windowID: id, pid: pid, axWindow: window,
+                                        bundleIdentifier: bundleIdentifier)
                 }
             }
         }
@@ -134,7 +137,7 @@ enum WindowLocator {
         }
         let ax = axWindows.first { windowID(of: $0) == pick.id }
         Log.write("using window-list fallback id=\(pick.id) (AX match: \(ax != nil))")
-        return TargetWindow(windowID: pick.id, pid: pid, axWindow: ax)
+        return TargetWindow(windowID: pick.id, pid: pid, axWindow: ax, bundleIdentifier: bundleIdentifier)
     }
 
     /// Some apps (e.g. Preview on macOS 27) are reported by NSWorkspace with pid -1. Fall back to
@@ -179,12 +182,26 @@ enum WindowLocator {
         let title: String
     }
 
-    static func frontDocumentWindow(of app: NSRunningApplication) -> CGWindowID? {
+    static func activationPIDs(reportedPID: pid_t, bundleIdentifier: String?, runningPIDs: [pid_t],
+                               knownTargets: [TargetWindow]) -> Set<pid_t> {
+        var pids = Set(([reportedPID] + runningPIDs).filter { $0 > 0 })
+        if let bundleIdentifier {
+            pids.formUnion(knownTargets.filter { $0.bundleIdentifier == bundleIdentifier && $0.pid > 0 }.map(\.pid))
+        }
+        return pids
+    }
+
+    static func activationPIDs(for app: NSRunningApplication, knownTargets: [TargetWindow]) -> Set<pid_t> {
+        let runningPIDs = app.bundleIdentifier.map {
+            NSRunningApplication.runningApplications(withBundleIdentifier: $0).map(\.processIdentifier)
+        } ?? []
+        return activationPIDs(reportedPID: app.processIdentifier, bundleIdentifier: app.bundleIdentifier,
+                              runningPIDs: runningPIDs, knownTargets: knownTargets)
+    }
+
+    static func frontDocumentWindow(of pids: Set<pid_t>) -> CGWindowID? {
         // Don't use the global front window here: its order may still describe the outgoing app.
-        let pids = app.processIdentifier > 0 ? [app.processIdentifier] :
-            app.bundleIdentifier.map { NSRunningApplication.runningApplications(withBundleIdentifier: $0)
-                .map(\.processIdentifier).filter { $0 > 0 } } ?? []
-        return pids.lazy.compactMap { onScreenWindows(of: $0).first(where: isDocumentWindow)?.id }.first
+        onScreenWindows(of: pids).first(where: isDocumentWindow)?.id
     }
 
     static func focusedWindowID(of pid: pid_t) -> CGWindowID? {
@@ -196,10 +213,14 @@ enum WindowLocator {
     }
 
     private static func onScreenWindows(of pid: pid_t) -> [WindowInfo] {
+        onScreenWindows(of: [pid])
+    }
+
+    private static func onScreenWindows(of pids: Set<pid_t>) -> [WindowInfo] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                     kCGNullWindowID) as? [[String: Any]] else { return [] }
         return list.compactMap { info in
-            guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
+            guard let pid = info[kCGWindowOwnerPID as String] as? pid_t, pids.contains(pid),
                   let id = info[kCGWindowNumber as String] as? CGWindowID,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
