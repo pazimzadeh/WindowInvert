@@ -105,6 +105,7 @@ enum ShortcutAction: String, CaseIterable {
     case invertWindow
     case invertContent
     case switchStyle
+    case cycleContrast
     case stopAll
 
     var hotKeyID: UInt32 {
@@ -112,6 +113,7 @@ enum ShortcutAction: String, CaseIterable {
         case .invertWindow: return 1
         case .invertContent: return 2
         case .switchStyle: return 3
+        case .cycleContrast: return 5
         case .stopAll: return 4
         }
     }
@@ -121,6 +123,7 @@ enum ShortcutAction: String, CaseIterable {
         case .invertWindow: return "Invert whole window"
         case .invertContent: return "Invert content only"
         case .switchStyle: return "Switch invert style"
+        case .cycleContrast: return "Cycle contrast levels"
         case .stopAll: return "Stop all inversions"
         }
     }
@@ -129,8 +132,9 @@ enum ShortcutAction: String, CaseIterable {
         switch self {
         case .invertWindow: return KeyCombo(keyCode: UInt32(kVK_ANSI_8), modifiers: UInt32(optionKey))
         case .invertContent: return KeyCombo(keyCode: UInt32(kVK_ANSI_9), modifiers: UInt32(optionKey))
-        case .switchStyle: return KeyCombo(keyCode: UInt32(kVK_ANSI_0), modifiers: UInt32(optionKey))
-        case .stopAll: return KeyCombo(keyCode: UInt32(kVK_ANSI_7), modifiers: UInt32(optionKey))
+        case .switchStyle: return KeyCombo(keyCode: UInt32(kVK_ANSI_0), modifiers: UInt32(optionKey | cmdKey))
+        case .cycleContrast: return KeyCombo(keyCode: UInt32(kVK_ANSI_0), modifiers: UInt32(optionKey | shiftKey))
+        case .stopAll: return KeyCombo(keyCode: UInt32(kVK_ANSI_0), modifiers: UInt32(optionKey))
         }
     }
 

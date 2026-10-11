@@ -8,6 +8,8 @@ enum WindowServer {
     private typealias IsOrderedIn = @convention(c) (Int32, UInt32, UnsafeMutablePointer<Bool>) -> Int32
     private typealias CopySpaces = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
     private typealias ChangeSpaces = @convention(c) (Int32, CFArray, CFArray) -> Void
+    private typealias SetTransform = @convention(c) (Int32, UInt32, CGAffineTransform) -> Int32
+    private typealias GetTransform = @convention(c) (Int32, UInt32, UnsafeMutablePointer<CGAffineTransform>) -> Int32
 
     private static let library = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
     private static func load<T>(_ name: String, as type: T.Type) -> T? {
@@ -21,6 +23,29 @@ enum WindowServer {
     private static let copySpaces = load("SLSCopySpacesForWindows", as: CopySpaces.self)
     private static let addSpaces = load("SLSAddWindowsToSpaces", as: ChangeSpaces.self)
     private static let removeSpaces = load("SLSRemoveWindowsFromSpaces", as: ChangeSpaces.self)
+    private static let setTransform = load("SLSSetWindowTransform", as: SetTransform.self)
+    private static let getTransform = load("SLSGetWindowTransform", as: GetTransform.self)
+
+    static func transform(of window: CGWindowID) -> CGAffineTransform? {
+        guard let connection, let getTransform else { return nil }
+        var transform = CGAffineTransform.identity
+        guard getTransform(connection, window, &transform) == 0 else { return nil }
+        return transform
+    }
+
+    static var canTransformWindows: Bool { connection != nil && getBounds != nil && setTransform != nil }
+
+    static func presentationTransform(from source: CGRect, to destination: CGRect) -> CGAffineTransform {
+        // WindowServer maps display coordinates back into the window's unscaled surface.
+        CGAffineTransform(scaleX: source.width / destination.width, y: source.height / destination.height)
+            .translatedBy(x: -destination.minX, y: -destination.minY)
+    }
+
+    static func present(_ window: CGWindowID, from source: CGRect, at destination: CGRect) -> Bool {
+        guard let connection, let setTransform, source.width > 0, source.height > 0,
+              destination.width > 0, destination.height > 0 else { return false }
+        return setTransform(connection, window, presentationTransform(from: source, to: destination)) == 0
+    }
 
     static var isAvailable: Bool {
         connection != nil && getBounds != nil && isOrderedIn != nil

@@ -7,6 +7,8 @@ import QuartzCore
 final class InversionController {
     private(set) var sessions: [CGWindowID: InversionSession] = [:]
     private var displayLink: CADisplayLink?
+    private var missionControlTrace: MissionControlTrace?
+    var isTracingMissionControl: Bool { missionControlTrace != nil }
     var onChange: (() -> Void)?
 
     var colorMode: ColorMode {
@@ -37,8 +39,12 @@ final class InversionController {
         }
     }
 
+    static func registerDefaults(in defaults: UserDefaults) {
+        defaults.register(defaults: ["pausesBehindSheets": true, "hidesInMissionControl": false])
+    }
+
     init() {
-        UserDefaults.standard.register(defaults: ["pausesBehindSheets": true, "hidesInMissionControl": true])
+        Self.registerDefaults(in: .standard)
         pausesBehindSheets = UserDefaults.standard.bool(forKey: "pausesBehindSheets")
         hidesInMissionControl = UserDefaults.standard.bool(forKey: "hidesInMissionControl")
         contrast = Contrast(rawValue: UserDefaults.standard.integer(forKey: "contrast")) ?? .high
@@ -131,8 +137,31 @@ final class InversionController {
     }
 
     @objc private func tick() {
+        let missionControl = WindowLocator.missionControlState()
         for session in Array(sessions.values) {
-            session.tick()
+            session.tick(missionControl: missionControl)
+        }
+        missionControlTrace?.recordTrackingTick(missionControl: missionControl,
+            activeTargets: sessions.values.filter(\.isInMissionControl).map(\.target.windowID))
+    }
+
+    func traceMissionControl() {
+        guard missionControlTrace == nil, !sessions.isEmpty else { return }
+        let trace = MissionControlTrace(targets: sessions.mapValues(\.overlayWindowID),
+                                        hidesInMissionControl: hidesInMissionControl)
+        missionControlTrace = trace
+        Log.write("Mission Control diagnostic capture started (20 seconds; geometry only)")
+        trace.start { [weak self] result in
+            self?.missionControlTrace = nil
+            switch result {
+            case .success(let url):
+                Log.write("Mission Control diagnostic capture saved to \(url.path)")
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            case .failure(let error):
+                Log.write("Mission Control diagnostic capture failed: \(error)")
+                let alert = NSAlert(error: error)
+                alert.runModal()
+            }
         }
     }
 }

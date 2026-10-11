@@ -37,12 +37,21 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private let overlay = OverlayWindow()
+    var overlayWindowID: CGWindowID { CGWindowID(overlay.windowNumber) }
     private let sampleQueue = DispatchQueue(label: "WindowInvert.capture", qos: .userInteractive)
     private var stream: SCStream?
     private var latestFrame: Frame?
     private var bounds: CGRect = .null
     private var isTargetVisible = false
     private var isTargetOnScreen = false
+    private var windowState: WindowState?
+    private(set) var isInMissionControl = false
+    private var hasPresentationTransform = false
+    private var presentationTransformFailed = false
+
+    private var suppressesMissionControl: Bool {
+        hidesInMissionControl || !WindowServer.canTransformWindows || presentationTransformFailed
+    }
     private var insets = EdgeInsets.zero
     /// True while one of the target app's sheets or popovers covers the target. macOS already dims
     /// the window behind a sheet, and inverting that dimming would brighten it, so the overlay hides.
@@ -55,9 +64,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             render()
         }
     }
-    var hidesInMissionControl: Bool {
-        get { overlay.hidesInMissionControl }
-        set { overlay.hidesInMissionControl = newValue }
+    var hidesInMissionControl = false {
+        didSet {
+            if isInMissionControl && hidesInMissionControl { overlay.orderOut(nil) }
+            else { render() }
+        }
     }
     private var holes: [CGRect] = []
     /// Matches the corner radius of sheets on macOS 26.
@@ -100,6 +111,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         Log.write("start: window \(target.windowID) bounds=\(state.bounds) onScreen=\(state.isOnScreen) scope=\(scope)")
         bounds = state.bounds
+        windowState = state
         isTargetVisible = state.isVisibleInItsSpace
         isTargetOnScreen = state.isOnScreen
         Log.write("window \(target.windowID): native Space tracking available=\(WindowServer.isAvailable)")
@@ -161,13 +173,21 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - Tracking (called every display refresh)
 
-    func tick() {
+    func tick(missionControl: MissionControlState) {
         guard !ended else { return }
         guard let state = WindowLocator.state(of: target.windowID) else {
             end()
             return
         }
 
+        let wasInMissionControl = isInMissionControl
+        isInMissionControl = missionControl.isActive(for: state, wasActive: wasInMissionControl)
+        if wasInMissionControl != isInMissionControl {
+            Log.write("window \(target.windowID): Mission Control \(isInMissionControl ? "entered" : "exited"), "
+                      + "hide=\(hidesInMissionControl), transform available=\(WindowServer.canTransformWindows), "
+                      + "overview=\(missionControl.overviewVisible), strip=\(missionControl.spacesStripVisible), scaled=\(state.hasOverviewScale)")
+        }
+        windowState = state
         isTargetOnScreen = state.isOnScreen
         // Off-Space is not hidden: leave the overlay ordered there so it rides the return slide.
         let visible = state.isVisibleInItsSpace
@@ -179,6 +199,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         guard visible else { return }
         matchOverlaySpace()
 
+        if isInMissionControl && suppressesMissionControl {
+            if overlay.isVisible { overlay.orderOut(nil) }
+            return
+        }
+
         if state.bounds != bounds {
             let sizeChanged = state.bounds.size != bounds.size
             bounds = state.bounds
@@ -188,7 +213,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             render()
         }
-        if isTargetOnScreen { updateStacking() }
+        if isInMissionControl || wasInMissionControl { render() }
+        if isTargetOnScreen && !isInMissionControl { updateStacking() }
         if !overlay.isVisible && latestFrame != nil {
             render()
         }
@@ -248,8 +274,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func preferredLevel(above: [WindowLocator.StackedWindow]) -> NSWindow.Level {
-        let me = getpid()
-        return above.contains { $0.layer == 0 && $0.pid != target.pid && $0.pid != me } ? .normal : .floating
+        let overlayIDs = Set(NSApp.windows.compactMap { window -> CGWindowID? in
+            guard window is OverlayWindow else { return nil }
+            return CGWindowID(window.windowNumber)
+        })
+        return WindowLocator.overlayLevel(above: above, targetPID: target.pid, overlayWindowIDs: overlayIDs)
     }
 
     /// Re-measured once a second while the window isn't being resized. AX calls block until the target app
@@ -265,6 +294,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isSampling = false
+                guard !self.isInMissionControl else { return }
                 if samples.isEmpty != self.backgroundSamples.isEmpty {
                     Log.write("window \(self.target.windowID): background samples \(samples)")
                 }
@@ -443,6 +473,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let frame = Frame(pixelBuffer: pixelBuffer, contentRect: contentRect, capturedPoints: capturedPoints)
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.ended else { return }
+            // ScreenCaptureKit's overview frames may contain a clipped, already-scaled thumbnail.
+            guard !self.isInMissionControl else { return }
             self.latestFrame = frame
             self.render()
         }
@@ -482,8 +514,10 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func render() {
         guard !ended, isTargetVisible, !isPausedForSheet, let frame = latestFrame, !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return }
+        guard !(isInMissionControl && suppressesMissionControl) else { return }
 
         let overlayRect = scope == .content ? bounds.inset(by: insets) : bounds
+        let displayRect = windowState?.displayBounds(for: overlayRect, inMissionControl: isInMissionControl) ?? overlayRect
         let cocoaRect = overlayRect.flippedToCocoa
 
         updateCaptureExtraTop(from: frame)
@@ -525,6 +559,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                                    contrast: contrast, keep: keepColor(for: frame), keepRect: keepRect, edge: Float(3 * captureScale),
                                    holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
         CATransaction.commit()
+
+        if isInMissionControl || hasPresentationTransform {
+            guard WindowServer.present(CGWindowID(overlay.windowNumber), from: overlayRect, at: displayRect) else {
+                presentationTransformFailed = true
+                overlay.orderOut(nil)
+                Log.write("window \(target.windowID): Mission Control transform failed; hiding overlay")
+                return
+            }
+            hasPresentationTransform = isInMissionControl
+        }
 
         if !overlay.isVisible && isTargetOnScreen {
             Log.write("window \(target.windowID): showing overlay")

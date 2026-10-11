@@ -6,12 +6,13 @@ A small macOS menu bar app that color-inverts **one window** — handy for readi
 |---|---|
 | **⌥8** (Option-8) | Invert the whole front window (toggle) |
 | **⌥9** (Option-9) | Invert only the window's content, leaving the title bar / toolbar / sidebar alone (toggle) |
-| **⌥0** (Option-0) | Switch invert style: Classic ↔ Hue-Preserving |
-| **⌥7** (Option-7) | Stop all inversions |
+| **⌥⌘0** (Option-Command-0) | Switch invert style: Classic ↔ Hue-Preserving |
+| **⇧⌥0** (Shift-Option-0) | Cycle contrast: High → Medium → Soft → High |
+| **⌥0** (Option-0) | Stop all inversions |
 
-All three shortcuts can be changed (or cleared) in **Settings…** from the menu bar icon.
+All five shortcuts can be changed (or cleared) in **Settings…** from the menu bar icon. Previously saved shortcuts are preserved; use each row's **Default** button to adopt a new default.
 
-Press the same shortcut again to turn it off. Pressing the other shortcut switches modes. You can invert several windows at once; **Stop All Inversions** (⌥7) turns them all off.
+Press ⌥8 or ⌥9 again to turn that inversion off. Pressing the other inversion shortcut switches modes. You can invert several windows at once; **Stop All Inversions** (⌥0) turns them all off.
 
 The menu bar icon also has: Classic vs. Hue-Preserving invert (hue-preserving keeps reds red and blues blue while flipping brightness), a contrast setting (High / Medium / Soft — Medium and Soft lift the black background to dark grey while text stays white), permission status, and Launch at Login.
 
@@ -60,10 +61,12 @@ The menu shows whether each permission is granted. If you rebuild with an ad-hoc
 
 ## Limitations
 
-- While WindowInvert is running, its shortcuts (default ⌥8 / ⌥9 / ⌥0 / ⌥7) no longer type `•` / `ª` / `º` / `¶`. Change or clear them in Settings if you need those characters.
-- By default the overlay is hidden during Mission Control, so the window shows un-inverted there. Turn on **Invert During Mission Control** to keep it; the inverted layer then stays where the window was instead of following it into Mission Control, as in versions before 0.3.
+- While WindowInvert is running, registered shortcuts consume their key combinations (for example, ⌥8 / ⌥9 / ⌥0 no longer type `•` / `ª` / `º`). Change or clear them in Settings if you need those characters.
+- **Invert During Mission Control** is on by default, so the overlay follows the window's thumbnail. Turn it off to hide the overlay during the overview. Previously saved choices are preserved. The overview uses the last clean captured image because ScreenCaptureKit can deliver clipped/scaled frames during Mission Control; live capture resumes on exit. Slow macOS 27 gestures are detected using WindowManager's overview strip together with proportional window shrink, and tracking stays active through cancellation/exit.
+- An occasional brief loss of inversion has been reported, possibly after rapid Space/Mission Control transitions; its cause is not yet diagnosed. If it recurs, save the diagnostic log immediately afterward and note whether it happened during or after the gesture.
+- To diagnose Mission Control timing, invert a window, then choose **Record Mission Control Diagnostics (20 seconds)**. Slowly enter the overview, hold halfway for a few seconds, finish, then exit. Finder reveals the resulting JSON file after capture. It records geometry, compositor surfaces (including off-screen ones), raw transforms and tracking-callback timing on an independent sampler; it does not record images, window titles or input. It is opt-in, stops automatically, and does not change overlay behavior.
 - The overlay is a live copy, so it's about one frame behind the real window; during fast resizes or scrolls you may notice a slight lag at the edges.
-- Space tracking uses dynamically loaded, private WindowServer functions to read pre-animation geometry and match the overlay's Space membership. These may change in future macOS releases; if unavailable, the app falls back to public geometry/visibility queries, with reduced Space-transition fidelity.
+- Space tracking uses dynamically loaded, private WindowServer functions to read pre-animation geometry and match the overlay's Space membership. Mission Control separately detects the overview surface owned by Dock (layer 18 on macOS 26) or WindowManager (layer 19 on macOS 27), using process identity rather than localized names. A WindowServer transform follows the thumbnail; ordinary Space slides still use only native geometry. These macOS internals may change in future releases. If native Space APIs are unavailable, public geometry/visibility queries provide reduced Space-transition fidelity; if the thumbnail transform is unavailable, the overlay hides during Mission Control instead.
 - macOS shows the purple screen-recording indicator in the menu bar while a window is inverted.
 - The overlay hides when the target window is minimized or otherwise off screen, and comes back when it returns.
 - Tested with Preview on macOS 26 and (by the author) macOS 27. Other apps should work for ⌥8; ⌥9 depends on how well the app reports its content area to Accessibility.
