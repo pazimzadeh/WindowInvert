@@ -26,14 +26,13 @@ final class OverlayWindow: NSWindow {
         contentView = view
     }
 
-    /// .transient hides the overlay during Mission Control instead of animating it separately (which
-    /// can lag or come loose); .stationary keeps it on screen, moving with the desktop.
+    /// Mission Control behavior is independent of the target's Space membership.
     var hidesInMissionControl = true {
         didSet { updateCollectionBehavior() }
     }
 
     private func updateCollectionBehavior() {
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle,
+        collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle,
                               hidesInMissionControl ? .transient : .stationary]
     }
 

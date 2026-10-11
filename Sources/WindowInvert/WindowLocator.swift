@@ -25,6 +25,11 @@ struct EdgeInsets: Equatable {
 struct WindowState {
     let bounds: CGRect
     let isOnScreen: Bool
+    let isOrderedIn: Bool
+
+    var isVisibleInItsSpace: Bool {
+        isOrderedIn && bounds.width > 1 && bounds.height > 1
+    }
 }
 
 enum WindowLocator {
@@ -154,7 +159,10 @@ enum WindowLocator {
               let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
               let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
         let onScreen = (info[kCGWindowIsOnscreen as String] as? Bool) ?? false
-        return WindowState(bounds: bounds, isOnScreen: onScreen)
+        // The public bounds include the Spaces slide. Applying them to an overlay that the
+        // compositor is also sliding moves it twice; use the window's underlying bounds instead.
+        return WindowState(bounds: WindowServer.bounds(of: windowID) ?? bounds, isOnScreen: onScreen,
+                           isOrderedIn: WindowServer.orderedIn(windowID) ?? onScreen)
     }
 
     struct StackedWindow {
@@ -175,7 +183,8 @@ enum WindowLocator {
                   let pid = info[kCGWindowOwnerPID as String] as? pid_t,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
-            return StackedWindow(id: id, pid: pid, layer: info[kCGWindowLayer as String] as? Int ?? 0, bounds: bounds,
+            return StackedWindow(id: id, pid: pid, layer: info[kCGWindowLayer as String] as? Int ?? 0,
+                                 bounds: WindowServer.bounds(of: id) ?? bounds,
                                  title: info[kCGWindowName as String] as? String ?? "")
         }
     }

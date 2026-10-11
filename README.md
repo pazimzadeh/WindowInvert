@@ -25,6 +25,7 @@ macOS has no public API to recolor another app's window, so WindowInvert:
 4. Follows the window every display refresh, so moving and resizing track in real time. Other windows that come in front still cover it normally.
 5. Turns itself off while the app shows a sheet or popover over the window (Print, Save, Export, …). macOS already dims the window behind a sheet, and inverting that dimming would brighten it. Inversion comes back when the sheet closes. Turn on **Invert Behind Sheets & Popovers** in the menu to keep inverting; sheets then show through un-inverted.
 6. In Preview, leaves the dark background around the pages dark (only the pages are inverted), so full-screen reading stays dark.
+7. Keeps each overlay on its target window's Spaces and lets macOS slide both together, rather than copying the Space-transition motion into the overlay a second time.
 
 For ⌥9, the content area is found through the Accessibility API (Preview's PDF view, a browser's web area, a text view, etc.). If nothing suitable is found, it falls back to skipping the title bar.
 
@@ -62,6 +63,7 @@ The menu shows whether each permission is granted. If you rebuild with an ad-hoc
 - While WindowInvert is running, its shortcuts (default ⌥8 / ⌥9 / ⌥0 / ⌥7) no longer type `•` / `ª` / `º` / `¶`. Change or clear them in Settings if you need those characters.
 - By default the overlay is hidden during Mission Control, so the window shows un-inverted there. Turn on **Invert During Mission Control** to keep it; the inverted layer then stays where the window was instead of following it into Mission Control, as in versions before 0.3.
 - The overlay is a live copy, so it's about one frame behind the real window; during fast resizes or scrolls you may notice a slight lag at the edges.
+- Space tracking uses dynamically loaded, private WindowServer functions to read pre-animation geometry and match the overlay's Space membership. These may change in future macOS releases; if unavailable, the app falls back to public geometry/visibility queries, with reduced Space-transition fidelity.
 - macOS shows the purple screen-recording indicator in the menu bar while a window is inverted.
 - The overlay hides when the target window is minimized or otherwise off screen, and comes back when it returns.
 - Tested with Preview on macOS 26 and (by the author) macOS 27. Other apps should work for ⌥8; ⌥9 depends on how well the app reports its content area to Accessibility.

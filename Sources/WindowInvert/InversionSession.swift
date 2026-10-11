@@ -42,6 +42,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var latestFrame: Frame?
     private var bounds: CGRect = .null
     private var isTargetVisible = false
+    private var isTargetOnScreen = false
     private var insets = EdgeInsets.zero
     /// True while one of the target app's sheets or popovers covers the target. macOS already dims
     /// the window behind a sheet, and inverting that dimming would brighten it, so the overlay hides.
@@ -99,14 +100,18 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         Log.write("start: window \(target.windowID) bounds=\(state.bounds) onScreen=\(state.isOnScreen) scope=\(scope)")
         bounds = state.bounds
-        isTargetVisible = state.isOnScreen
+        isTargetVisible = state.isVisibleInItsSpace
+        isTargetOnScreen = state.isOnScreen
+        Log.write("window \(target.windowID): native Space tracking available=\(WindowServer.isAvailable)")
         refreshInsets()
         // Order the still-empty (transparent) overlay in now, so it is already on screen when the
         // first frame arrives instead of appearing a few frames later.
-        if isTargetVisible {
+        if isTargetOnScreen {
             overlay.setFrame(bounds.flippedToCocoa, display: false)
             overlay.level = preferredLevel(above: WindowLocator.windowsAbove(target.windowID))
+            matchOverlaySpace()
             overlay.order(.above, relativeTo: Int(target.windowID))
+            matchOverlaySpace()
         }
 
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -163,13 +168,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
 
-        let visible = state.isOnScreen && state.bounds.width > 1 && state.bounds.height > 1
+        isTargetOnScreen = state.isOnScreen
+        // Off-Space is not hidden: leave the overlay ordered there so it rides the return slide.
+        let visible = state.isVisibleInItsSpace
         if visible != isTargetVisible {
             isTargetVisible = visible
-            Log.write("window \(target.windowID): target \(visible ? "visible again" : "not on screen"), bounds \(state.bounds)")
+            Log.write("window \(target.windowID): target \(visible ? "ordered in" : "hidden/minimized"), bounds \(state.bounds)")
             if !visible { overlay.orderOut(nil) }
         }
         guard visible else { return }
+        matchOverlaySpace()
 
         if state.bounds != bounds {
             let sizeChanged = state.bounds.size != bounds.size
@@ -180,10 +188,14 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             render()
         }
-        updateStacking()
+        if isTargetOnScreen { updateStacking() }
         if !overlay.isVisible && latestFrame != nil {
             render()
         }
+    }
+
+    private func matchOverlaySpace() {
+        WindowServer.matchSpaces(of: CGWindowID(overlay.windowNumber), to: target.windowID)
     }
 
     /// Keeps the overlay directly above the target. The window server keeps an app's sheets and
@@ -514,9 +526,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                                    holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
         CATransaction.commit()
 
-        if !overlay.isVisible {
+        if !overlay.isVisible && isTargetOnScreen {
             Log.write("window \(target.windowID): showing overlay")
+            matchOverlaySpace()
             overlay.order(.above, relativeTo: Int(target.windowID))
+            matchOverlaySpace()
         }
     }
 
