@@ -27,6 +27,7 @@ struct WindowState {
     let isOnScreen: Bool
     let isOrderedIn: Bool
     var presentedBounds: CGRect? = nil
+    var spaceTranslation = CGPoint.zero
 
     var isVisibleInItsSpace: Bool {
         isOrderedIn && bounds.width > 1 && bounds.height > 1
@@ -49,8 +50,8 @@ struct WindowState {
         guard inMissionControl, let presentedBounds, bounds.width > 0, bounds.height > 0 else { return rect }
         let sx = presentedBounds.width / bounds.width
         let sy = presentedBounds.height / bounds.height
-        return CGRect(x: presentedBounds.minX + (rect.minX - bounds.minX) * sx,
-                      y: presentedBounds.minY + (rect.minY - bounds.minY) * sy,
+        return CGRect(x: presentedBounds.minX - spaceTranslation.x + (rect.minX - bounds.minX) * sx,
+                      y: presentedBounds.minY - spaceTranslation.y + (rect.minY - bounds.minY) * sy,
                       width: rect.width * sx, height: rect.height * sy)
     }
 }
@@ -200,19 +201,64 @@ enum WindowLocator {
         return _AXUIElementGetWindow(window, &id) == .success ? id : 0
     }
 
-    static func state(of windowID: CGWindowID) -> WindowState? {
+    static func state(of windowID: CGWindowID, spaceReference: CGWindowID? = nil) -> WindowState? {
         // The array must hold raw CGWindowID values, not boxed objects.
-        var value = UnsafeRawPointer(bitPattern: UInt(windowID))
-        guard let ids = CFArrayCreate(nil, &value, 1, nil),
+        let windowIDs = [windowID] + (spaceReference.map { [$0] } ?? [])
+        var values = windowIDs.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+        guard let ids = values.withUnsafeMutableBufferPointer({ CFArrayCreate(nil, $0.baseAddress, $0.count, nil) }),
               let list = CGWindowListCreateDescriptionFromArray(ids) as? [[String: Any]],
-              let info = list.first,
+              let info = list.first(where: { ($0[kCGWindowNumber as String] as? CGWindowID) == windowID }),
               let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
               let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
         let onScreen = (info[kCGWindowIsOnscreen as String] as? Bool) ?? false
+        var translation = CGPoint.zero
+        if let spaceReference,
+           let reference = list.first(where: { ($0[kCGWindowNumber as String] as? CGWindowID) == spaceReference }),
+           let rect = reference[kCGWindowBounds as String] as? NSDictionary,
+           let presented = CGRect(dictionaryRepresentation: rect),
+           let native = WindowServer.bounds(of: spaceReference) {
+            translation = spaceTranslation(native: native, presented: presented)
+        }
         // The public bounds include the Spaces slide. Applying them to an overlay that the
         // compositor is also sliding moves it twice; use the window's underlying bounds instead.
         return WindowState(bounds: WindowServer.bounds(of: windowID) ?? bounds, isOnScreen: onScreen,
-                           isOrderedIn: WindowServer.orderedIn(windowID) ?? onScreen, presentedBounds: bounds)
+                           isOrderedIn: WindowServer.orderedIn(windowID) ?? onScreen, presentedBounds: bounds,
+                           spaceTranslation: translation)
+    }
+
+    static func spaceTranslation(native: CGRect, presented: CGRect) -> CGPoint {
+        guard !native.isEmpty, !presented.isEmpty,
+              abs(native.width - presented.width) <= 1, abs(native.height - presented.height) <= 1 else { return .zero }
+        let offset = CGPoint(x: presented.minX - native.minX, y: presented.minY - native.minY)
+        return offset.x.isFinite && offset.y.isFinite ? offset : .zero
+    }
+
+    static func spaceReferenceWindow(for target: CGWindowID) -> CGWindowID? {
+        guard let spaces = WindowServer.spaces(of: target), let bounds = WindowServer.bounds(of: target),
+              let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else { return nil }
+        return spaceReferenceWindow(in: windows, targetSpaces: spaces, targetBounds: bounds,
+                                    bundleIdentifierForPID: { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier },
+                                    boundsForWindow: WindowServer.bounds, spacesForWindow: WindowServer.spaces)
+    }
+
+    static func spaceReferenceWindow(in windows: [[String: Any]], targetSpaces: Set<UInt64>, targetBounds: CGRect,
+                                     bundleIdentifierForPID: (pid_t) -> String?,
+                                     boundsForWindow: (CGWindowID) -> CGRect?,
+                                     spacesForWindow: (CGWindowID) -> Set<UInt64>?) -> CGWindowID? {
+        guard !targetSpaces.isEmpty else { return nil }
+        // The compositor's wallpaper rides its Space but never receives the overview's window scaling.
+        let wallpaperLevel = Int(CGWindowLevelForKey(.desktopWindow)) - 1
+        for window in windows {
+            guard (window[kCGWindowLayer as String] as? Int) == wallpaperLevel,
+                  let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  let bundle = bundleIdentifierForPID(pid), ["com.apple.dock", "com.apple.WindowManager"].contains(bundle),
+                  let id = window[kCGWindowNumber as String] as? CGWindowID,
+                  spacesForWindow(id) == targetSpaces,
+                  let native = boundsForWindow(id),
+                  native.contains(CGPoint(x: targetBounds.midX, y: targetBounds.midY)) else { continue }
+            return id
+        }
+        return nil
     }
 
     static func missionControlState() -> MissionControlState {

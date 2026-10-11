@@ -45,6 +45,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var isTargetVisible = false
     private var isTargetOnScreen = false
     private var windowState: WindowState?
+    private var spaceReferenceWindowID: CGWindowID?
+    private var lastSpaceReferenceRefresh: CFTimeInterval = 0
     private(set) var isInMissionControl = false
     private var hasPresentationTransform = false
     private var presentationTransformFailed = false
@@ -176,7 +178,16 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func tick(missionControl: MissionControlState) {
         guard !ended else { return }
-        guard let state = WindowLocator.state(of: target.windowID) else {
+        let now = CACurrentMediaTime()
+        if now - lastSpaceReferenceRefresh >= 1 {
+            let reference = WindowLocator.spaceReferenceWindow(for: target.windowID)
+            if reference != spaceReferenceWindowID {
+                Log.write("window \(target.windowID): Space motion reference \(reference.map(String.init) ?? "unavailable")")
+            }
+            spaceReferenceWindowID = reference
+            lastSpaceReferenceRefresh = now
+        }
+        guard let state = WindowLocator.state(of: target.windowID, spaceReference: spaceReferenceWindowID) else {
             end()
             return
         }
