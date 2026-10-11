@@ -48,6 +48,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var spaceReferenceWindowID: CGWindowID?
     private var lastSpaceReferenceRefresh: CFTimeInterval = 0
     private(set) var isInMissionControl = false
+    private var isShowingDesktop = false
+    private var isFollowingPresentation: Bool { isInMissionControl || isShowingDesktop }
     private var hasPresentationTransform = false
     private var presentationTransformFailed = false
     private var activation = OverlayActivation()
@@ -192,8 +194,14 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
 
+        let wasFollowingPresentation = isFollowingPresentation
         let wasInMissionControl = isInMissionControl
         isInMissionControl = missionControl.isActive(for: state, wasActive: wasInMissionControl)
+        let showingDesktop = !isInMissionControl && state.hasDesktopDisplacement
+        if showingDesktop != isShowingDesktop {
+            Log.write("window \(target.windowID): Show Desktop \(showingDesktop ? "entered" : "exited")")
+            isShowingDesktop = showingDesktop
+        }
         if wasInMissionControl != isInMissionControl {
             Log.write("window \(target.windowID): Mission Control \(isInMissionControl ? "entered" : "exited"), "
                       + "hide=\(hidesInMissionControl), transform available=\(WindowServer.canTransformWindows), "
@@ -228,8 +236,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             render()
         }
-        if isInMissionControl || wasInMissionControl { render() }
-        if isTargetOnScreen && !isInMissionControl { updateStacking() }
+        if isFollowingPresentation || wasFollowingPresentation { render() }
+        if isTargetOnScreen && !isFollowingPresentation { updateStacking() }
         if !overlay.isVisible && latestFrame != nil {
             render()
         }
@@ -319,7 +327,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isSampling = false
-                guard !self.isInMissionControl else { return }
+                guard !self.isFollowingPresentation else { return }
                 if samples.isEmpty != self.backgroundSamples.isEmpty {
                     Log.write("window \(self.target.windowID): background samples \(samples)")
                 }
@@ -498,8 +506,8 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let frame = Frame(pixelBuffer: pixelBuffer, contentRect: contentRect, capturedPoints: capturedPoints)
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.ended else { return }
-            // ScreenCaptureKit's overview frames may contain a clipped, already-scaled thumbnail.
-            guard !self.isInMissionControl else { return }
+            // Compositor animations can produce clipped or already-scaled capture frames.
+            guard !self.isFollowingPresentation else { return }
             self.latestFrame = frame
             self.render()
         }
@@ -585,14 +593,14 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                                    holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
         CATransaction.commit()
 
-        if isInMissionControl || hasPresentationTransform {
+        if isFollowingPresentation || hasPresentationTransform {
             guard WindowServer.present(CGWindowID(overlay.windowNumber), from: overlayRect, at: displayRect) else {
                 presentationTransformFailed = true
                 overlay.orderOut(nil)
-                Log.write("window \(target.windowID): Mission Control transform failed; hiding overlay")
+                Log.write("window \(target.windowID): presentation transform failed; hiding overlay")
                 return
             }
-            hasPresentationTransform = isInMissionControl
+            hasPresentationTransform = isFollowingPresentation
         }
 
         if !overlay.isVisible && isTargetOnScreen {

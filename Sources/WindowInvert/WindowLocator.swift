@@ -27,7 +27,7 @@ struct WindowState {
     let isOnScreen: Bool
     let isOrderedIn: Bool
     var presentedBounds: CGRect? = nil
-    var spaceTranslation = CGPoint.zero
+    var spaceTranslation: CGPoint? = nil
 
     var isVisibleInItsSpace: Bool {
         isOrderedIn && bounds.width > 1 && bounds.height > 1
@@ -46,12 +46,24 @@ struct WindowState {
         return minimumScale <= maximumScale
     }
 
+    var hasDesktopDisplacement: Bool {
+        guard isVisibleInItsSpace, let presentedBounds, let spaceTranslation,
+              abs(presentedBounds.width - bounds.width) <= 1,
+              abs(presentedBounds.height - bounds.height) <= 1 else { return false }
+        // Show Desktop translates windows independently of the desktop. A Space swipe does not.
+        let dx = presentedBounds.minX - bounds.minX - spaceTranslation.x
+        let dy = presentedBounds.minY - bounds.minY - spaceTranslation.y
+        return dx.isFinite && dy.isFinite && (abs(dx) > 2 || abs(dy) > 2)
+    }
+
     func displayBounds(for rect: CGRect, inMissionControl: Bool) -> CGRect {
-        guard inMissionControl, let presentedBounds, bounds.width > 0, bounds.height > 0 else { return rect }
+        guard inMissionControl || hasDesktopDisplacement, let presentedBounds,
+              bounds.width > 0, bounds.height > 0 else { return rect }
+        let translation = spaceTranslation ?? .zero
         let sx = presentedBounds.width / bounds.width
         let sy = presentedBounds.height / bounds.height
-        return CGRect(x: presentedBounds.minX - spaceTranslation.x + (rect.minX - bounds.minX) * sx,
-                      y: presentedBounds.minY - spaceTranslation.y + (rect.minY - bounds.minY) * sy,
+        return CGRect(x: presentedBounds.minX - translation.x + (rect.minX - bounds.minX) * sx,
+                      y: presentedBounds.minY - translation.y + (rect.minY - bounds.minY) * sy,
                       width: rect.width * sx, height: rect.height * sy)
     }
 }
@@ -211,7 +223,7 @@ enum WindowLocator {
               let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
               let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
         let onScreen = (info[kCGWindowIsOnscreen as String] as? Bool) ?? false
-        var translation = CGPoint.zero
+        var translation: CGPoint?
         if let spaceReference,
            let reference = list.first(where: { ($0[kCGWindowNumber as String] as? CGWindowID) == spaceReference }),
            let rect = reference[kCGWindowBounds as String] as? NSDictionary,
@@ -226,11 +238,11 @@ enum WindowLocator {
                            spaceTranslation: translation)
     }
 
-    static func spaceTranslation(native: CGRect, presented: CGRect) -> CGPoint {
+    static func spaceTranslation(native: CGRect, presented: CGRect) -> CGPoint? {
         guard !native.isEmpty, !presented.isEmpty,
-              abs(native.width - presented.width) <= 1, abs(native.height - presented.height) <= 1 else { return .zero }
+              abs(native.width - presented.width) <= 1, abs(native.height - presented.height) <= 1 else { return nil }
         let offset = CGPoint(x: presented.minX - native.minX, y: presented.minY - native.minY)
-        return offset.x.isFinite && offset.y.isFinite ? offset : .zero
+        return offset.x.isFinite && offset.y.isFinite ? offset : nil
     }
 
     static func spaceReferenceWindow(for target: CGWindowID) -> CGWindowID? {

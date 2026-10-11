@@ -11,7 +11,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 290),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 330),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "WindowInvert Settings"
         window.isReleasedWhenClosed = false
@@ -64,7 +64,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         statusLabel.textColor = .systemRed
 
-        let stack = NSStackView(views: [header, grid, help, statusLabel])
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+        let versionLabel = NSTextField(labelWithString: "WindowInvert \(version) (build \(build))")
+        versionLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        versionLabel.textColor = .secondaryLabelColor
+        versionLabel.isSelectable = true
+
+        let stack = NSStackView(views: [header, grid, help, statusLabel, versionLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
