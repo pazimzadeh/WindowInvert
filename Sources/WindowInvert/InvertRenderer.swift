@@ -176,24 +176,25 @@ final class InvertRenderer {
 
     /// Renders `pixelBuffer` cropped to `crop` (normalized, top-left origin). Must be called inside a
     /// CATransaction on the main thread so the new contents appear atomically with any window resize.
+    @discardableResult
     func draw(pixelBuffer: CVPixelBuffer, crop: CGRect, mode: ColorMode, contrast: Contrast,
               keep: SIMD4<Float> = .zero, keepRect: CGRect = .zero, edge: Float = 0, holes: [CGRect] = [], holeRadius: CGFloat = 0,
-              into layer: CAMetalLayer) {
-        guard let textureCache else { return }
+              into layer: CAMetalLayer) -> Bool {
+        guard let textureCache else { return false }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         var cvTexture: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, pixelBuffer, nil, .bgra8Unorm,
                                                   width, height, 0, &cvTexture)
         guard let cvTexture, let texture = CVMetalTextureGetTexture(cvTexture),
-              let commandBuffer = queue.makeCommandBuffer() else { return }
+              let commandBuffer = queue.makeCommandBuffer() else { return false }
         let drawableStart = CACurrentMediaTime()
         let nextDrawable = layer.nextDrawable()
         let drawableWait = CACurrentMediaTime() - drawableStart
         if drawableWait > 0.05 {
             Log.write("Metal drawable wait: \(Int(drawableWait * 1000)) ms")
         }
-        guard let drawable = nextDrawable else { return }
+        guard let drawable = nextDrawable else { return false }
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
@@ -213,7 +214,7 @@ final class InvertRenderer {
                 slots[i] = SIMD4(Float(hole.minX), Float(hole.minY), Float(hole.width), Float(hole.height))
             }
         }
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return false }
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&params, length: MemoryLayout<Params>.stride, index: 0)
         encoder.setFragmentBytes(&params, length: MemoryLayout<Params>.stride, index: 0)
@@ -230,5 +231,6 @@ final class InvertRenderer {
             Log.write("Metal scheduling wait: \(Int(scheduleWait * 1000)) ms")
         }
         drawable.present()
+        return true
     }
 }

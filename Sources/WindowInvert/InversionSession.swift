@@ -53,6 +53,27 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var hasPresentationTransform = false
     private var presentationTransformFailed = false
     private var activation = OverlayActivation()
+    weak var diagnosticTrace: MissionControlTrace?
+    var freezesImageForDiagnostics = false {
+        didSet {
+            recordDiagnosticState()
+            if freezesImageForDiagnostics != oldValue && !freezesImageForDiagnostics && !ended { render() }
+        }
+    }
+    private var submittedDraws = 0
+    private var lastDrawSubmitted: CFTimeInterval?
+    private var isReusingDiagnosticImage = false
+
+    func recordDiagnosticState() {
+        diagnosticTrace?.recordSessionState(target: target.windowID, state: [
+            "overlay": overlayWindowID, "overlayVisible": overlay.isVisible,
+            "appKitLevel": overlay.level.rawValue, "freezeRequested": freezesImageForDiagnostics,
+            "imageReused": isReusingDiagnosticImage, "submittedDraws": submittedDraws,
+            "lastDrawSubmitted": lastDrawSubmitted as Any? ?? NSNull(),
+            "missionControl": isInMissionControl, "showDesktop": isShowingDesktop,
+            "pausedForSheet": isPausedForSheet,
+        ])
+    }
 
     private var suppressesMissionControl: Bool {
         hidesInMissionControl || !WindowServer.canTransformWindows || presentationTransformFailed
@@ -261,6 +282,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         activation.begin(at: CACurrentMediaTime())
         overlay.level = .floating
         overlay.order(.above, relativeTo: Int(target.windowID))
+        recordDiagnosticState()
         Log.write("window \(target.windowID): activation, preparing overlay order")
     }
 
@@ -301,6 +323,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             Log.write("window \(target.windowID): \(targetIsFront ? "front-most, floating overlay" : "covered, normal-level overlay")")
             overlay.level = level
             overlay.order(.above, relativeTo: Int(target.windowID))
+            recordDiagnosticState()
             return
         }
         guard !targetIsFront else { return }
@@ -534,6 +557,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
         !isInMissionControl && (isShowingDesktop || wasShowingDesktop)
     }
 
+    static func reusesImageForDiagnostics(requested: Bool, hasImage: Bool,
+                                          visible: Bool, frameMatches: Bool) -> Bool {
+        requested && hasImage && visible && frameMatches
+    }
+
     /// The part of the frame showing the window's CG bounds, in buffer pixels.
     private func windowPixelRect(of frame: Frame) -> CGRect {
         let cr = frame.contentRect
@@ -567,8 +595,11 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
         // Show Desktop only translates the frozen surface. Don't wait for another Metal drawable
         // before moving it, including the final transform reset when the window returns.
-        if reusingImage && overlay.isVisible && overlay.frame == cocoaRect {
+        isReusingDiagnosticImage = Self.reusesImageForDiagnostics(requested: freezesImageForDiagnostics,
+            hasImage: submittedDraws > 0, visible: overlay.isVisible, frameMatches: overlay.frame == cocoaRect)
+        if (reusingImage || isReusingDiagnosticImage) && overlay.isVisible && overlay.frame == cocoaRect {
             _ = updatePresentation(from: overlayRect, to: displayRect)
+            recordDiagnosticState()
             return
         }
 
@@ -607,9 +638,13 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
                    width: hole.width * scale, height: hole.height * scale)
         }
         let captureScale = cr.height / max(1, bounds.height)
-        InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode,
+        let submitted = InvertRenderer.shared.draw(pixelBuffer: frame.pixelBuffer, crop: crop, mode: colorMode,
                                    contrast: contrast, keep: keepColor(for: frame), keepRect: keepRect, edge: Float(3 * captureScale),
                                    holes: pixelHoles, holeRadius: Self.holeCornerRadius * scale, into: layer)
+        if submitted {
+            submittedDraws += 1
+            lastDrawSubmitted = CACurrentMediaTime()
+        }
         CATransaction.commit()
 
         guard updatePresentation(from: overlayRect, to: displayRect) else { return }
@@ -620,6 +655,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             overlay.order(.above, relativeTo: Int(target.windowID))
             matchOverlaySpace()
         }
+        recordDiagnosticState()
     }
 
     private func updatePresentation(from overlayRect: CGRect, to displayRect: CGRect) -> Bool {

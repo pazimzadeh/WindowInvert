@@ -143,6 +143,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                               action: #selector(traceMissionControl), keyEquivalent: "")
         if controller.isTracingMissionControl || controller.sessions.isEmpty { trace.action = nil }
         menu.addItem(trace)
+        let activationTrace = NSMenuItem(title: controller.isTracingMissionControl ? "Recording Diagnostics…"
+                                        : "Record Activation Diagnostics (20 seconds, frozen image)",
+                                        action: #selector(traceActivation), keyEquivalent: "")
+        if controller.isTracingMissionControl || controller.sessions.isEmpty { activationTrace.action = nil }
+        menu.addItem(activationTrace)
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
 
         menu.addItem(.separator())
@@ -193,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func traceMissionControl() { controller.traceMissionControl() }
+    @objc private func traceActivation() { controller.traceMissionControl(freezesImage: true) }
 
     @objc private func toggleLaunchAtLogin() {
         do {

@@ -70,6 +70,7 @@ final class InversionController {
     private func applicationActivated(pids: Set<pid_t>, source: String) {
         guard !sessions.isEmpty else { return }
         let id = WindowLocator.frontDocumentWindow(of: pids)
+        missionControlTrace?.recordActivation(source: source, pids: pids, window: id)
         Log.write("activation: \(source), pids=\(pids.sorted()), window=\(id.map(String.init) ?? "unresolved")")
         prepareForActivation(windowID: id, activePIDs: pids)
     }
@@ -99,6 +100,7 @@ final class InversionController {
             Log.write("focus lookup unresolved: pid=\(pid); retaining activation hold")
             return
         }
+        missionControlTrace?.recordActivation(source: "Accessibility focus", pids: [pid], window: id)
         prepareForActivation(windowID: id, activePIDs: [pid])
     }
 
@@ -227,19 +229,29 @@ final class InversionController {
         let missionControl = WindowLocator.missionControlState()
         for session in Array(sessions.values) {
             session.tick(missionControl: missionControl)
+            if missionControlTrace != nil { session.recordDiagnosticState() }
         }
         missionControlTrace?.recordTrackingTick(missionControl: missionControl,
             activeTargets: sessions.values.filter(\.isInMissionControl).map(\.target.windowID))
     }
 
-    func traceMissionControl() {
+    func traceMissionControl(freezesImage: Bool = false) {
         guard missionControlTrace == nil, !sessions.isEmpty else { return }
         let trace = MissionControlTrace(targets: sessions.mapValues(\.overlayWindowID),
-                                        hidesInMissionControl: hidesInMissionControl)
+                                        hidesInMissionControl: hidesInMissionControl, freezesImage: freezesImage)
         missionControlTrace = trace
-        Log.write("Mission Control diagnostic capture started (20 seconds; geometry only)")
+        let tracedSessions = Array(sessions.values)
+        for session in tracedSessions {
+            session.diagnosticTrace = trace
+            session.freezesImageForDiagnostics = freezesImage
+        }
+        Log.write("Diagnostic capture started (20 seconds; no images/input; freeze=\(freezesImage))")
         trace.start { [weak self] result in
             self?.missionControlTrace = nil
+            for session in tracedSessions {
+                session.diagnosticTrace = nil
+                session.freezesImageForDiagnostics = false
+            }
             switch result {
             case .success(let url):
                 Log.write("Mission Control diagnostic capture saved to \(url.path)")
