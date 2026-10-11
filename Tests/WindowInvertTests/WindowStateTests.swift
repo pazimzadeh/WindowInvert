@@ -90,7 +90,7 @@ final class WindowStateTests: XCTestCase {
         XCTAssertEqual(WindowLocator.spaceTranslation(native: .null, presented: desktop), .zero)
     }
 
-    func testSpaceReferenceMatchesTargetSpaceAndScreenWithoutDependingOnVisibility() {
+    func testWindowManagerSpaceReferenceMatchesSpaceAndScreenAndIgnoresDock() {
         let desktop = CGRect(x: 0, y: 0, width: 1728, height: 1117)
         let wallpaperLevel = Int(CGWindowLevelForKey(.desktopWindow)) - 1
         let candidates: [[String: Any]] = [(1, 101, wallpaperLevel), (2, 202, wallpaperLevel),
@@ -106,7 +106,7 @@ final class WindowStateTests: XCTestCase {
                                               boundsForWindow: { $0 == 2 ? desktop.offsetBy(dx: 1728, dy: 0) : desktop },
                                               spacesForWindow: { spaces[$0] })
         }
-        XCTAssertEqual(reference(for: [11]), 1)
+        XCTAssertNil(reference(for: [11]))
         XCTAssertEqual(reference(for: [22]), 5)
         XCTAssertNil(reference(for: [33]))
         XCTAssertNil(reference(for: []))

@@ -246,12 +246,13 @@ enum WindowLocator {
                                      boundsForWindow: (CGWindowID) -> CGRect?,
                                      spacesForWindow: (CGWindowID) -> Set<UInt64>?) -> CGWindowID? {
         guard !targetSpaces.isEmpty else { return nil }
-        // The compositor's wallpaper rides its Space but never receives the overview's window scaling.
+        // WindowManager slides the overlay's Space too; the older Dock overview does not.
+        // Its wallpaper tracks that slide without receiving the overview's window scaling.
         let wallpaperLevel = Int(CGWindowLevelForKey(.desktopWindow)) - 1
         for window in windows {
             guard (window[kCGWindowLayer as String] as? Int) == wallpaperLevel,
                   let pid = window[kCGWindowOwnerPID as String] as? pid_t,
-                  let bundle = bundleIdentifierForPID(pid), ["com.apple.dock", "com.apple.WindowManager"].contains(bundle),
+                  bundleIdentifierForPID(pid) == "com.apple.WindowManager",
                   let id = window[kCGWindowNumber as String] as? CGWindowID,
                   spacesForWindow(id) == targetSpaces,
                   let native = boundsForWindow(id),
