@@ -39,8 +39,12 @@ final class InversionController {
         }
     }
 
+    static func registerDefaults(in defaults: UserDefaults) {
+        defaults.register(defaults: ["pausesBehindSheets": true, "hidesInMissionControl": false])
+    }
+
     init() {
-        UserDefaults.standard.register(defaults: ["pausesBehindSheets": true, "hidesInMissionControl": true])
+        Self.registerDefaults(in: .standard)
         pausesBehindSheets = UserDefaults.standard.bool(forKey: "pausesBehindSheets")
         hidesInMissionControl = UserDefaults.standard.bool(forKey: "hidesInMissionControl")
         contrast = Contrast(rawValue: UserDefaults.standard.integer(forKey: "contrast")) ?? .high

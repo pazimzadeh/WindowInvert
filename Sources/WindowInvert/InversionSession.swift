@@ -64,7 +64,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             render()
         }
     }
-    var hidesInMissionControl = true {
+    var hidesInMissionControl = false {
         didSet {
             if isInMissionControl && hidesInMissionControl { overlay.orderOut(nil) }
             else { render() }
