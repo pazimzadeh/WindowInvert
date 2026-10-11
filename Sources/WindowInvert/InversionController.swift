@@ -7,6 +7,8 @@ import QuartzCore
 final class InversionController {
     private(set) var sessions: [CGWindowID: InversionSession] = [:]
     private var displayLink: CADisplayLink?
+    private var missionControlTrace: MissionControlTrace?
+    var isTracingMissionControl: Bool { missionControlTrace != nil }
     var onChange: (() -> Void)?
 
     var colorMode: ColorMode {
@@ -132,8 +134,29 @@ final class InversionController {
 
     @objc private func tick() {
         let missionControlActive = WindowLocator.isMissionControlActive()
+        missionControlTrace?.recordTrackingTick(missionControlActive: missionControlActive)
         for session in Array(sessions.values) {
             session.tick(missionControlActive: missionControlActive)
+        }
+    }
+
+    func traceMissionControl() {
+        guard missionControlTrace == nil, !sessions.isEmpty else { return }
+        let trace = MissionControlTrace(targets: sessions.mapValues(\.overlayWindowID),
+                                        hidesInMissionControl: hidesInMissionControl)
+        missionControlTrace = trace
+        Log.write("Mission Control diagnostic capture started (20 seconds; geometry only)")
+        trace.start { [weak self] result in
+            self?.missionControlTrace = nil
+            switch result {
+            case .success(let url):
+                Log.write("Mission Control diagnostic capture saved to \(url.path)")
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            case .failure(let error):
+                Log.write("Mission Control diagnostic capture failed: \(error)")
+                let alert = NSAlert(error: error)
+                alert.runModal()
+            }
         }
     }
 }

@@ -136,6 +136,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(login)
 
         menu.addItem(NSMenuItem(title: "Show Diagnostic Log", action: #selector(showLog), keyEquivalent: ""))
+        let trace = NSMenuItem(title: controller.isTracingMissionControl ? "Recording Mission Control Diagnostics…"
+                              : "Record Mission Control Diagnostics (20 seconds)",
+                              action: #selector(traceMissionControl), keyEquivalent: "")
+        if controller.isTracingMissionControl || controller.sessions.isEmpty { trace.action = nil }
+        menu.addItem(trace)
         menu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ","))
 
         menu.addItem(.separator())
@@ -176,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { NSWorkspace.shared.open(Log.url) }
     }
     @objc private func quit() { NSApp.terminate(nil) }
+    @objc private func traceMissionControl() { controller.traceMissionControl() }
 
     @objc private func toggleLaunchAtLogin() {
         do {

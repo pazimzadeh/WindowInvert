@@ -37,6 +37,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private let overlay = OverlayWindow()
+    var overlayWindowID: CGWindowID { CGWindowID(overlay.windowNumber) }
     private let sampleQueue = DispatchQueue(label: "WindowInvert.capture", qos: .userInteractive)
     private var stream: SCStream?
     private var latestFrame: Frame?
