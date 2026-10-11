@@ -68,6 +68,7 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// (see WindowLocator.backgroundSamplePoints).
     private var backgroundSamples: [CGPoint] = []
     private var lastKeep = SIMD4<Float>.zero
+    private var loggedBackgroundMeasurement = false
     private var backgroundArea = CGRect.null
     private var lastSampleTime: CFTimeInterval = 0
     private var lastSampleBounds: CGRect = .null
@@ -298,12 +299,21 @@ final class InversionSession: NSObject, SCStreamOutput, SCStreamDelegate {
             let pixel = base.advanced(by: y * bytesPerRow + x * 4).assumingMemoryBound(to: UInt8.self)
             colors.append(SIMD3(Float(pixel[2]), Float(pixel[1]), Float(pixel[0])) / 255) // BGRA
         }
+        if !loggedBackgroundMeasurement {
+            loggedBackgroundMeasurement = true
+            Log.write("window \(target.windowID): initial background colours \(colors)")
+        }
+        return Self.backgroundColor(from: colors)
+    }
+
+    static func backgroundColor(from colors: [SIMD3<Float>]) -> SIMD4<Float> {
         let needed = colors.count / 2 + 1
         guard let first = colors.first(where: { c in
             colors.filter { (($0 - c) * ($0 - c)).max() < 0.0004 }.count >= needed
         }), colors.count >= 2 else { return .zero }
         let luma = first.x * 0.299 + first.y * 0.587 + first.z * 0.114
-        guard luma > 0.03, luma < 0.4, first.max() - first.min() < 0.05 else { return .zero }
+        // Allow Preview's slightly blue-tinted dark gutter as well as neutral greys.
+        guard luma > 0.03, luma < 0.4, first.max() - first.min() < 0.1 else { return .zero }
         return SIMD4(first, 1)
     }
 

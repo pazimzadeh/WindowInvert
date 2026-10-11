@@ -16,6 +16,7 @@ let package = Package(
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("ServiceManagement"),
             ]
-        )
+        ),
+        .testTarget(name: "WindowInvertTests", dependencies: ["WindowInvert"])
     ]
 )
